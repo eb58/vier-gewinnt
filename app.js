@@ -195,10 +195,11 @@ const formatNodes = (nodes) => nodes >= 1000000 ? `${(nodes / 1000000).toFixed(1
 const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
 const playerName = (player) => player === AI ? 'KI' : 'Mensch'
 const currentPlayerFromSnapshot = (snapshot) => snapshot.moves.length % 2 ? 1 - snapshot.startPlayer : snapshot.startPlayer
-const scoreMeaning = (score, player) => {
-  if (score > 0) return `Gewinnstellung fuer ${playerName(player)} innerhalb der Suchtiefe`
-  if (score < 0) return `Verluststellung fuer ${playerName(player)} innerhalb der Suchtiefe`
-  return `Keine erzwungene Gewinn-/Verluststellung fuer ${playerName(player)} bis zur erreichten Tiefe`
+const scoreMeaning = (score, player, depth) => {
+  const depthText = Number.isInteger(depth) ? `bis Tiefe ${depth}` : 'innerhalb der Suchtiefe'
+  if (score > 0) return `Gewinnstellung fuer ${playerName(player)} ${depthText}`
+  if (score < 0) return `Verluststellung fuer ${playerName(player)} ${depthText}`
+  return ''
 }
 
 const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
@@ -213,23 +214,22 @@ const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
 }
 
 const logSearchDepth = (kind, info, perspective) => {
-  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Bewertung: ${scoreMeaning(info.score, perspective)}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
+  const meaning = scoreMeaning(info.score, perspective, info.depth)
+  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}${meaning ? `, Bewertung: ${meaning}` : ''}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
 }
 
 const logSearchEnd = ({ kind, result, col, perspective }) => {
+  const meaning = scoreMeaning(result.score, perspective, result.depth)
+  const moveText = Number.isInteger(col) ? col + 1 : '-'
   console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${Number.isInteger(col) ? col + 1 : '-'}, Score ${result.score}, Tiefe ${result.depth}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
-  console.log('Bewertung:', scoreMeaning(result.score, perspective))
+  if (meaning) console.log('Bewertung:', meaning)
   console.groupEnd?.()
+  if (meaning) console.log(`[Vier Gewinnt] ${kind}: ${meaning} | bester Zug: Spalte ${moveText} | Score ${result.score}`)
 }
 
 const logSearchAbort = (kind, reason) => {
   console.log(`[Vier Gewinnt] ${kind} verworfen: ${reason}`)
   console.groupEnd?.()
-}
-
-const logMoveResult = ({ player, col, didWin }) => {
-  console.log(`[Vier Gewinnt] Zug ${state.moves.length}: ${playerName(player)} spielt Spalte ${col + 1}${didWin ? ' -> Gewinnzug' : ''}`)
-  if (!didWin && state.board.cntMoves < COLS * ROWS) console.log(`[Vier Gewinnt] Stellung danach: ${playerName(state.board.currentPlayer)} ist am Zug. Score-Bewertungen in den Suchlogs beziehen sich auf diesen Spieler.`)
 }
 
 const winningCellsForMove = (col, player) => {
@@ -340,7 +340,6 @@ const playMove = (col) => {
   state.hintCol = null
   state.hintPending = false
   state.hintRequest++
-  logMoveResult({ player, col, didWin })
   render()
   return finishIfNeeded(col, player, didWin)
 }
