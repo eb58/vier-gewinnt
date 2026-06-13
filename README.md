@@ -2,6 +2,12 @@
 
 Eine browserbasierte Vier-Gewinnt-Variante mit polierter Oberfläche, starker KI und klassischer 7x6-Spielmechanik.
 
+## Direkt spielen
+
+Das Spiel läuft über GitHub Pages:
+
+https://eb58.github.io/vier-gewinnt/
+
 ## Features
 
 - Spiel gegen eine KI mit mehreren Schwierigkeitsstufen
