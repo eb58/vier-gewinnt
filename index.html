@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vier Gewinnt Pro</title>
+    <meta name="theme-color" content="#184f41">
+    <meta name="description" content="Vier Gewinnt Pro mit starker KI, polierter Oberfläche und Turnier-Feeling.">
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <main class="app">
+      <section class="arena" aria-label="Vier Gewinnt Arena">
+        <header class="masthead">
+          <div class="brand-lockup">
+            <div class="brand-mark" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div>
+              <p class="eyebrow">Turnier-Edition</p>
+              <h1>Vier Gewinnt Pro</h1>
+            </div>
+          </div>
+
+          <div class="round-state">
+            <span class="turn-pill human-turn" id="turnPill">Du bist dran</span>
+            <span class="move-counter"><strong id="moveCount">0</strong>/42</span>
+          </div>
+        </header>
+
+        <div class="score-strip" aria-label="Punktestand">
+          <div class="player-plaque human-plaque">
+            <span class="token-mini human"></span>
+            <span class="player-copy">
+              <span>Spieler</span>
+              <strong>Du</strong>
+            </span>
+            <span class="score-value" id="humanScore">0</span>
+          </div>
+          <div class="player-plaque ai-plaque">
+            <span class="token-mini ai"></span>
+            <span class="player-copy">
+              <span>Gegner</span>
+              <strong>KI</strong>
+            </span>
+            <span class="score-value" id="aiScore">0</span>
+          </div>
+        </div>
+
+        <div class="table">
+          <div class="board-zone">
+            <div class="drop-track" id="columnPicker" aria-label="Spalte wählen"></div>
+            <div class="board-frame">
+              <div class="board" id="board" aria-label="Spielfeld"></div>
+            </div>
+            <div class="board-stand" aria-hidden="true"></div>
+          </div>
+
+          <div class="status-bar" id="statusBar" role="status" aria-live="polite">
+            <div>
+              <strong id="statusTitle">Du beginnst.</strong>
+              <span id="statusMeta">Wähle eine Spalte.</span>
+            </div>
+            <span class="engine-badge" id="engineBadge">Engine bereit</span>
+          </div>
+        </div>
+
+        <div class="result" id="result" hidden>
+          <div class="result-panel">
+            <span class="result-token" id="resultToken"></span>
+            <strong id="resultTitle">Runde beendet</strong>
+            <p id="resultText">Neues Spiel starten?</p>
+            <button class="primary-action" id="resultNewGame" type="button">Neue Runde</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="command-center" aria-label="Spielsteuerung">
+        <div class="control-header">
+          <p class="eyebrow">Control Room</p>
+          <h2>Spielsteuerung</h2>
+        </div>
+
+        <div class="action-grid">
+          <button class="primary-action" id="newGame" type="button">
+            <span class="button-icon reset-icon" aria-hidden="true"></span>
+            Neue Runde
+          </button>
+          <button class="secondary-action" id="undoMove" type="button">
+            <span class="button-icon undo-icon" aria-hidden="true"></span>
+            Zurück
+          </button>
+          <button class="secondary-action" id="hintMove" type="button">
+            <span class="button-icon hint-icon" aria-hidden="true"></span>
+            Tipp
+          </button>
+        </div>
+
+        <section class="control-section">
+          <div>
+            <span class="section-label">KI-Stärke</span>
+            <strong id="difficultyLabel">Profi</strong>
+          </div>
+          <div class="segmented" id="difficultyPicker" role="radiogroup" aria-label="KI-Stärke">
+            <button class="segment" type="button" data-label="Locker" data-time="700" data-depth="8">Locker</button>
+            <button class="segment" type="button" data-label="Club" data-time="1600" data-depth="13">Club</button>
+            <button class="segment active" type="button" data-label="Profi" data-time="3200" data-depth="18">Profi</button>
+            <button class="segment" type="button" data-label="Meister" data-time="9000" data-depth="23">Meister</button>
+          </div>
+        </section>
+
+        <section class="control-section">
+          <label class="switch-row">
+            <span>
+              <span class="section-label">Startspieler</span>
+              <strong>KI beginnt</strong>
+            </span>
+            <input id="aiStarts" type="checkbox">
+          </label>
+        </section>
+
+        <section class="control-section stats-section">
+          <div class="stat-line">
+            <span>Letzter KI-Zug</span>
+            <strong id="lastAiMove">-</strong>
+          </div>
+          <div class="stat-line">
+            <span>Suchtiefe</span>
+            <strong id="depthStat">-</strong>
+          </div>
+          <div class="stat-line">
+            <span>Knoten</span>
+            <strong id="nodesStat">-</strong>
+          </div>
+        </section>
+      </aside>
+
+      <div class="confetti" id="confetti" aria-hidden="true"></div>
+    </main>
+  </body>
+</html>
