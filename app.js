@@ -130,15 +130,15 @@ const sameSnapshot = (snapshot) => state.startPlayer === snapshot.startPlayer &&
 const fallbackMove = (board) => moveOrder.find((col) => board.heightCols[col] < ROWS)
 const normalizeResult = (board, result) => ({ ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(board) })
 
-const runEngineOnMain = (opts, snapshot) => {
+const runEngineOnMain = (opts, snapshot, onProgress = () => {}) => {
   const board = boardFromSnapshot(snapshot)
-  return normalizeResult(board, findBestMove(board, opts))
+  return normalizeResult(board, findBestMove(board, { ...opts, onDepth: onProgress }))
 }
 
-const searchEngine = (opts, snapshot = boardSnapshot()) => new Promise((resolve, reject) => {
+const searchEngine = (opts, snapshot = boardSnapshot(), onProgress = () => {}) => new Promise((resolve, reject) => {
   if (!engineWorker || state.workerFailed) {
     try {
-      resolve({ ...runEngineOnMain(opts, snapshot), worker: false })
+      resolve({ ...runEngineOnMain(opts, snapshot, onProgress), worker: false })
     } catch (error) {
       reject(error)
     }
@@ -146,15 +146,15 @@ const searchEngine = (opts, snapshot = boardSnapshot()) => new Promise((resolve,
   }
 
   const id = ++state.engineSeq
-  engineJobs.set(id, { resolve, reject })
+  engineJobs.set(id, { resolve, reject, onProgress })
   engineWorker.postMessage({ id, opts, snapshot })
 })
 
-const searchWithFallback = async (opts, snapshot = boardSnapshot()) => {
+const searchWithFallback = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => {
   try {
-    return await searchEngine(opts, snapshot)
+    return await searchEngine(opts, snapshot, onProgress)
   } catch (error) {
-    if (state.workerFailed) return { ...runEngineOnMain(opts, snapshot), worker: false }
+    if (state.workerFailed) return { ...runEngineOnMain(opts, snapshot, onProgress), worker: false }
     throw error
   }
 }
@@ -163,6 +163,11 @@ if (engineWorker) {
   engineWorker.addEventListener('message', ({ data }) => {
     const job = engineJobs.get(data.id)
     if (!job) return
+
+    if (data.type === 'progress') {
+      job.onProgress(data.info)
+      return
+    }
 
     engineJobs.delete(data.id)
     if (data.ok) job.resolve({ ...data.result, worker: true })
@@ -187,6 +192,32 @@ const columnFromPoint = (event) => {
 }
 
 const formatNodes = (nodes) => nodes >= 1000000 ? `${(nodes / 1000000).toFixed(1)}M` : nodes >= 1000 ? `${Math.round(nodes / 1000)}k` : `${nodes ?? '-'}`
+const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
+const playerName = (player) => player === AI ? 'KI' : 'Mensch'
+
+const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
+  const board = boardFromSnapshot(snapshot)
+  console.groupCollapsed?.(`[Vier Gewinnt] ${kind}: ${difficulty.label}, Tiefe ${opts.maxDepth}, Zeit ${opts.maxThinkingTime}ms`)
+  console.log('Startspieler:', playerName(snapshot.startPlayer))
+  console.log('Am Zug:', playerName(board.currentPlayer))
+  console.log('Zugfolge:', moveList(snapshot.moves))
+  console.log('Optionen:', opts)
+  console.log(board.toString())
+}
+
+const logSearchDepth = (kind, info) => {
+  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
+}
+
+const logSearchEnd = ({ kind, result, col }) => {
+  console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${Number.isInteger(col) ? col + 1 : '-'}, Score ${result.score}, Tiefe ${result.depth}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
+  console.groupEnd?.()
+}
+
+const logSearchAbort = (kind, reason) => {
+  console.log(`[Vier Gewinnt] ${kind} verworfen: ${reason}`)
+  console.groupEnd?.()
+}
 
 const winningCellsForMove = (col, player) => {
   const row = state.board.heightCols[col] - 1
@@ -305,24 +336,35 @@ const aiMove = async () => {
   const request = ++state.aiRequest
   const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
+  const opts = { maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth }
+  const kind = 'KI-Zug'
 
   state.locked = true
   setStatus('Die KI denkt ...', 'Die Engine bewertet die stärksten Spalten.')
+  logSearchStart({ kind, difficulty, opts, snapshot })
   render()
 
   try {
-    const result = await searchWithFallback({ maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth }, snapshot)
-    if (request !== state.aiRequest || !sameSnapshot(snapshot) || state.gameOver) return
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
+    if (request !== state.aiRequest || !sameSnapshot(snapshot) || state.gameOver) {
+      logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
+      return
+    }
 
     const fallback = fallbackMove(state.board)
     const col = Number.isInteger(result.bestMove) ? result.bestMove : fallback
     state.locked = false
     state.engineInfo = { ...result, move: col }
+    logSearchEnd({ kind, result, col })
     playMove(col)
     if (!state.gameOver) setStatus('Du bist dran.', `Die KI hat Spalte ${col + 1} gespielt.`)
     render()
   } catch (error) {
-    if (request !== state.aiRequest) return
+    if (request !== state.aiRequest) {
+      logSearchAbort(kind, 'Suchlauf ist veraltet')
+      return
+    }
+    logSearchAbort(kind, error.message || 'Engine-Fehler')
     state.locked = false
     setStatus('Engine-Fehler.', error.message || 'Die KI konnte keinen Zug berechnen.', 'loss')
     render()
@@ -342,19 +384,30 @@ const requestHint = async () => {
   const request = ++state.hintRequest
   const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
+  const opts = { maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) }
+  const kind = 'Tipp'
   state.hintPending = true
   setStatus('Tipp wird berechnet ...', 'Du kannst trotzdem weiterspielen.')
+  logSearchStart({ kind, difficulty, opts, snapshot })
   render()
 
   try {
-    const result = await searchWithFallback({ maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) }, snapshot)
-    if (request !== state.hintRequest || !sameSnapshot(snapshot) || state.gameOver || state.board.currentPlayer !== HUMAN) return
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
+    if (request !== state.hintRequest || !sameSnapshot(snapshot) || state.gameOver || state.board.currentPlayer !== HUMAN) {
+      logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
+      return
+    }
 
     state.hintCol = Number.isInteger(result.bestMove) ? result.bestMove : null
     state.engineInfo = { ...result, move: state.hintCol }
+    logSearchEnd({ kind, result, col: state.hintCol })
     setStatus('Tipp berechnet.', state.hintCol === null ? 'Keine freie Spalte gefunden.' : `Markiert ist Spalte ${state.hintCol + 1}.`)
   } catch (error) {
-    if (request !== state.hintRequest) return
+    if (request !== state.hintRequest) {
+      logSearchAbort(kind, 'Suchlauf ist veraltet')
+      return
+    }
+    logSearchAbort(kind, error.message || 'Engine-Fehler')
     setStatus('Tipp nicht verfügbar.', error.message || 'Die Engine konnte keinen Tipp berechnen.', 'loss')
   } finally {
     if (request === state.hintRequest) {

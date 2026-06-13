@@ -180,7 +180,9 @@ export const findBestMove = (board, opts) => {
     const cf = new CfEngine(board, searchInfo, tt)
     searchInfo.depth = depth
     searchInfo.score = cf.negamax(columns, depth, -MAXVAL, MAXVAL, true)
-    if (searchInfo.score || timeOut()) break
+    const timedOut = timeOut()
+    opts.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], timedOut })
+    if (searchInfo.score || timedOut) break
   }
   return { ...searchInfo, elapsedTime: t.elapsedTime() }
 }

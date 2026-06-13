@@ -21,7 +21,10 @@ self.addEventListener('message', ({ data }) => {
 
   try {
     const board = boardFromSnapshot(snapshot)
-    const result = normalizeResult(board, findBestMove(board, opts))
+    const result = normalizeResult(board, findBestMove(board, {
+      ...opts,
+      onDepth: (info) => self.postMessage({ id, type: 'progress', info })
+    }))
     self.postMessage({ id, ok: true, result })
   } catch (error) {
     self.postMessage({ id, ok: false, error: error.message || 'Engine-Fehler' })
