@@ -542,8 +542,9 @@ h2 {
 
 .primary-action {
   color: #fffaf2;
-  background: linear-gradient(145deg, #ef3f47, #b91f2a);
-  box-shadow: 0 14px 24px rgb(185 31 42 / 22%);
+  border-color: rgb(255 255 255 / 20%);
+  background: linear-gradient(145deg, #286d5b, var(--felt-dark));
+  box-shadow: 0 14px 24px rgb(15 48 42 / 18%);
 }
 
 .secondary-action,
