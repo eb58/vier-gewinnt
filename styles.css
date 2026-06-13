@@ -573,10 +573,12 @@ h2 {
   vertical-align: -3px;
 }
 
-.reset-icon {
-  border: 3px solid currentColor;
-  border-right-color: transparent;
-  border-radius: 50%;
+svg.button-icon {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.3;
 }
 
 .undo-icon {
