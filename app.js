@@ -3,6 +3,7 @@ import { Board, COLS, ROWS, findBestMove } from './cf-engine.js'
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
 const range = (n) => [...Array(n).keys()]
+const DIFFICULTY_KEY = 'vier-gewinnt:difficulty'
 const HUMAN = 1
 const AI = 0
 const state = {
@@ -70,6 +71,32 @@ const activeDifficulty = () => {
     time: Number(active.dataset.time),
     depth: Number(active.dataset.depth)
   }
+}
+
+const storage = {
+  get: (key) => {
+    try {
+      return localStorage.getItem(key)
+    } catch {
+      return null
+    }
+  },
+  set: (key, value) => {
+    try {
+      localStorage.setItem(key, value)
+    } catch {}
+  }
+}
+
+const applySavedDifficulty = () => {
+  const saved = storage.get(DIFFICULTY_KEY)
+  const button = saved ? $(`.segment[data-label="${saved}"]`) : null
+  if (!button) return
+
+  $$('.segment').forEach((segment) => {
+    segment.classList.toggle('active', segment === button)
+    segment.setAttribute('aria-checked', segment === button ? 'true' : 'false')
+  })
 }
 
 const setStatus = (title, meta = '', tone = '') => {
@@ -376,6 +403,7 @@ const setDifficulty = (button) => {
     segment.classList.toggle('active', segment === button)
     segment.setAttribute('aria-checked', segment === button ? 'true' : 'false')
   })
+  storage.set(DIFFICULTY_KEY, button.dataset.label)
   setStatus('KI-Stärke geändert.', `${button.dataset.label} ist aktiv.`)
   render()
 }
@@ -413,6 +441,7 @@ const buildControls = () => {
 
 buildBoard()
 buildControls()
+applySavedDifficulty()
 $$('.segment').forEach((button) => button.addEventListener('click', () => setDifficulty(button)))
 els.board.addEventListener('click', (event) => humanMove(columnFromPoint(event)))
 els.board.addEventListener('mousemove', (event) => {
