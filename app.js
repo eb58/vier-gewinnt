@@ -194,29 +194,42 @@ const columnFromPoint = (event) => {
 const formatNodes = (nodes) => nodes >= 1000000 ? `${(nodes / 1000000).toFixed(1)}M` : nodes >= 1000 ? `${Math.round(nodes / 1000)}k` : `${nodes ?? '-'}`
 const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
 const playerName = (player) => player === AI ? 'KI' : 'Mensch'
+const currentPlayerFromSnapshot = (snapshot) => snapshot.moves.length % 2 ? 1 - snapshot.startPlayer : snapshot.startPlayer
+const scoreMeaning = (score, player) => {
+  if (score > 0) return `Gewinnstellung fuer ${playerName(player)} innerhalb der Suchtiefe`
+  if (score < 0) return `Verluststellung fuer ${playerName(player)} innerhalb der Suchtiefe`
+  return `Keine erzwungene Gewinn-/Verluststellung fuer ${playerName(player)} bis zur erreichten Tiefe`
+}
 
 const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
   const board = boardFromSnapshot(snapshot)
   console.groupCollapsed?.(`[Vier Gewinnt] ${kind}: ${difficulty.label}, Tiefe ${opts.maxDepth}, Zeit ${opts.maxThinkingTime}ms`)
   console.log('Startspieler:', playerName(snapshot.startPlayer))
   console.log('Am Zug:', playerName(board.currentPlayer))
+  console.log('Bewertungsperspektive:', `${playerName(board.currentPlayer)} (Spieler am Zug)`)
   console.log('Zugfolge:', moveList(snapshot.moves))
   console.log('Optionen:', opts)
   console.log(board.toString())
 }
 
-const logSearchDepth = (kind, info) => {
-  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
+const logSearchDepth = (kind, info, perspective) => {
+  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Bewertung: ${scoreMeaning(info.score, perspective)}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
 }
 
-const logSearchEnd = ({ kind, result, col }) => {
+const logSearchEnd = ({ kind, result, col, perspective }) => {
   console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${Number.isInteger(col) ? col + 1 : '-'}, Score ${result.score}, Tiefe ${result.depth}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
+  console.log('Bewertung:', scoreMeaning(result.score, perspective))
   console.groupEnd?.()
 }
 
 const logSearchAbort = (kind, reason) => {
   console.log(`[Vier Gewinnt] ${kind} verworfen: ${reason}`)
   console.groupEnd?.()
+}
+
+const logMoveResult = ({ player, col, didWin }) => {
+  console.log(`[Vier Gewinnt] Zug ${state.moves.length}: ${playerName(player)} spielt Spalte ${col + 1}${didWin ? ' -> Gewinnzug' : ''}`)
+  if (!didWin && state.board.cntMoves < COLS * ROWS) console.log(`[Vier Gewinnt] Stellung danach: ${playerName(state.board.currentPlayer)} ist am Zug. Score-Bewertungen in den Suchlogs beziehen sich auf diesen Spieler.`)
 }
 
 const winningCellsForMove = (col, player) => {
@@ -327,6 +340,7 @@ const playMove = (col) => {
   state.hintCol = null
   state.hintPending = false
   state.hintRequest++
+  logMoveResult({ player, col, didWin })
   render()
   return finishIfNeeded(col, player, didWin)
 }
@@ -338,6 +352,7 @@ const aiMove = async () => {
   const difficulty = activeDifficulty()
   const opts = { maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth }
   const kind = 'KI-Zug'
+  const perspective = currentPlayerFromSnapshot(snapshot)
 
   state.locked = true
   setStatus('Die KI denkt ...', 'Die Engine bewertet die stärksten Spalten.')
@@ -345,7 +360,7 @@ const aiMove = async () => {
   render()
 
   try {
-    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info, perspective))
     if (request !== state.aiRequest || !sameSnapshot(snapshot) || state.gameOver) {
       logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
       return
@@ -355,7 +370,7 @@ const aiMove = async () => {
     const col = Number.isInteger(result.bestMove) ? result.bestMove : fallback
     state.locked = false
     state.engineInfo = { ...result, move: col }
-    logSearchEnd({ kind, result, col })
+    logSearchEnd({ kind, result, col, perspective })
     playMove(col)
     if (!state.gameOver) setStatus('Du bist dran.', `Die KI hat Spalte ${col + 1} gespielt.`)
     render()
@@ -386,13 +401,14 @@ const requestHint = async () => {
   const difficulty = activeDifficulty()
   const opts = { maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) }
   const kind = 'Tipp'
+  const perspective = currentPlayerFromSnapshot(snapshot)
   state.hintPending = true
   setStatus('Tipp wird berechnet ...', 'Du kannst trotzdem weiterspielen.')
   logSearchStart({ kind, difficulty, opts, snapshot })
   render()
 
   try {
-    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info, perspective))
     if (request !== state.hintRequest || !sameSnapshot(snapshot) || state.gameOver || state.board.currentPlayer !== HUMAN) {
       logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
       return
@@ -400,7 +416,7 @@ const requestHint = async () => {
 
     state.hintCol = Number.isInteger(result.bestMove) ? result.bestMove : null
     state.engineInfo = { ...result, move: state.hintCol }
-    logSearchEnd({ kind, result, col: state.hintCol })
+    logSearchEnd({ kind, result, col: state.hintCol, perspective })
     setStatus('Tipp berechnet.', state.hintCol === null ? 'Keine freie Spalte gefunden.' : `Markiert ist Spalte ${state.hintCol + 1}.`)
   } catch (error) {
     if (request !== state.hintRequest) {
