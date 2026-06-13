@@ -7,6 +7,7 @@ const HUMAN = 1
 const AI = 0
 const state = {
   board: new Board(),
+  startPlayer: HUMAN,
   locked: false,
   gameOver: false,
   scores: { human: 0, ai: 0 },
@@ -14,7 +15,12 @@ const state = {
   winningCells: [],
   hoverCol: null,
   hintCol: null,
-  engineInfo: null
+  hintPending: false,
+  engineInfo: null,
+  engineSeq: 0,
+  workerFailed: false,
+  aiRequest: 0,
+  hintRequest: 0
 }
 
 const els = {
@@ -80,6 +86,68 @@ const setTurn = () => {
 }
 
 const validColumn = (col) => Number.isInteger(col) && col >= 0 && col < COLS
+const moveOrder = [3, 2, 4, 1, 5, 0, 6]
+const workerSupported = typeof Worker !== 'undefined'
+const engineWorker = workerSupported ? new Worker(new URL('./engine-worker.js', import.meta.url), { type: 'module' }) : null
+const engineJobs = new Map()
+
+const boardFromSnapshot = ({ startPlayer, moves }) => {
+  const board = new Board()
+  board.init(startPlayer)
+  moves.forEach((col) => board.doMove(col))
+  return board
+}
+
+const boardSnapshot = () => ({ startPlayer: state.startPlayer, moves: [...state.moves] })
+const sameSnapshot = (snapshot) => state.startPlayer === snapshot.startPlayer && state.moves.length === snapshot.moves.length && state.moves.every((move, idx) => move === snapshot.moves[idx])
+const fallbackMove = (board) => moveOrder.find((col) => board.heightCols[col] < ROWS)
+const normalizeResult = (board, result) => ({ ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(board) })
+
+const runEngineOnMain = (opts, snapshot) => {
+  const board = boardFromSnapshot(snapshot)
+  return normalizeResult(board, findBestMove(board, opts))
+}
+
+const searchEngine = (opts, snapshot = boardSnapshot()) => new Promise((resolve, reject) => {
+  if (!engineWorker || state.workerFailed) {
+    try {
+      resolve({ ...runEngineOnMain(opts, snapshot), worker: false })
+    } catch (error) {
+      reject(error)
+    }
+    return
+  }
+
+  const id = ++state.engineSeq
+  engineJobs.set(id, { resolve, reject })
+  engineWorker.postMessage({ id, opts, snapshot })
+})
+
+const searchWithFallback = async (opts, snapshot = boardSnapshot()) => {
+  try {
+    return await searchEngine(opts, snapshot)
+  } catch (error) {
+    if (state.workerFailed) return { ...runEngineOnMain(opts, snapshot), worker: false }
+    throw error
+  }
+}
+
+if (engineWorker) {
+  engineWorker.addEventListener('message', ({ data }) => {
+    const job = engineJobs.get(data.id)
+    if (!job) return
+
+    engineJobs.delete(data.id)
+    if (data.ok) job.resolve({ ...data.result, worker: true })
+    else job.reject(new Error(data.error || 'Engine-Fehler'))
+  })
+
+  engineWorker.addEventListener('error', (event) => {
+    state.workerFailed = true
+    engineJobs.forEach(({ reject }) => reject(new Error(event.message || 'Worker-Fehler')))
+    engineJobs.clear()
+  })
+}
 
 const columnFromPoint = (event) => {
   const cell = event.target.closest('.cell')
@@ -159,9 +227,9 @@ const render = () => {
   els.humanScore.textContent = state.scores.human
   els.aiScore.textContent = state.scores.ai
   els.undoMove.disabled = state.locked || state.gameOver || state.moves.length === 0
-  els.hintMove.disabled = state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
+  els.hintMove.disabled = state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
   els.difficultyLabel.textContent = activeDifficulty().label
-  els.engineBadge.textContent = state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : 'Engine bereit'
+  els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : engineWorker && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
   els.lastAiMove.textContent = state.engineInfo?.move === undefined ? '-' : `Spalte ${state.engineInfo.move + 1}`
   els.depthStat.textContent = state.engineInfo?.depth ?? '-'
   els.nodesStat.textContent = state.engineInfo ? formatNodes(state.engineInfo.nodes) : '-'
@@ -199,27 +267,39 @@ const playMove = (col) => {
   state.moves.push(col)
   state.hoverCol = null
   state.hintCol = null
+  state.hintPending = false
+  state.hintRequest++
   render()
   return finishIfNeeded(col, player, didWin)
 }
 
-const aiMove = () => {
+const aiMove = async () => {
   if (state.gameOver) return
+  const request = ++state.aiRequest
+  const snapshot = boardSnapshot()
+  const difficulty = activeDifficulty()
+
   state.locked = true
   setStatus('Die KI denkt ...', 'Die Engine bewertet die stärksten Spalten.')
   render()
 
-  setTimeout(() => {
-    const difficulty = activeDifficulty()
-    const result = findBestMove(state.board, { maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth })
-    const fallback = range(COLS).find((col) => state.board.heightCols[col] < ROWS)
+  try {
+    const result = await searchWithFallback({ maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth }, snapshot)
+    if (request !== state.aiRequest || !sameSnapshot(snapshot) || state.gameOver) return
+
+    const fallback = fallbackMove(state.board)
     const col = Number.isInteger(result.bestMove) ? result.bestMove : fallback
     state.locked = false
     state.engineInfo = { ...result, move: col }
     playMove(col)
     if (!state.gameOver) setStatus('Du bist dran.', `Die KI hat Spalte ${col + 1} gespielt.`)
     render()
-  }, 180)
+  } catch (error) {
+    if (request !== state.aiRequest) return
+    state.locked = false
+    setStatus('Engine-Fehler.', error.message || 'Die KI konnte keinen Zug berechnen.', 'loss')
+    render()
+  }
 }
 
 const humanMove = (col) => {
@@ -230,14 +310,31 @@ const humanMove = (col) => {
   }
 }
 
-const requestHint = () => {
-  if (state.locked || state.gameOver || state.board.currentPlayer !== HUMAN) return
+const requestHint = async () => {
+  if (state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN) return
+  const request = ++state.hintRequest
+  const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
-  const result = findBestMove(state.board, { maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) })
-  state.hintCol = Number.isInteger(result.bestMove) ? result.bestMove : null
-  state.engineInfo = { ...result, move: state.hintCol }
-  setStatus('Tipp berechnet.', state.hintCol === null ? 'Keine freie Spalte gefunden.' : `Markiert ist Spalte ${state.hintCol + 1}.`)
+  state.hintPending = true
+  setStatus('Tipp wird berechnet ...', 'Du kannst trotzdem weiterspielen.')
   render()
+
+  try {
+    const result = await searchWithFallback({ maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) }, snapshot)
+    if (request !== state.hintRequest || !sameSnapshot(snapshot) || state.gameOver || state.board.currentPlayer !== HUMAN) return
+
+    state.hintCol = Number.isInteger(result.bestMove) ? result.bestMove : null
+    state.engineInfo = { ...result, move: state.hintCol }
+    setStatus('Tipp berechnet.', state.hintCol === null ? 'Keine freie Spalte gefunden.' : `Markiert ist Spalte ${state.hintCol + 1}.`)
+  } catch (error) {
+    if (request !== state.hintRequest) return
+    setStatus('Tipp nicht verfügbar.', error.message || 'Die Engine konnte keinen Tipp berechnen.', 'loss')
+  } finally {
+    if (request === state.hintRequest) {
+      state.hintPending = false
+      render()
+    }
+  }
 }
 
 const undoMove = () => {
@@ -245,6 +342,9 @@ const undoMove = () => {
   const undoCount = state.board.currentPlayer === HUMAN ? Math.min(2, state.moves.length) : 1
   range(undoCount).forEach(() => state.board.undoMove(state.moves.pop()))
   state.hintCol = null
+  state.hintPending = false
+  state.aiRequest++
+  state.hintRequest++
   state.winningCells = []
   setStatus('Zug zurückgenommen.', state.board.currentPlayer === HUMAN ? 'Du bist wieder dran.' : 'KI ist am Zug.')
   render()
@@ -254,14 +354,18 @@ const undoMove = () => {
 const newGame = () => {
   hideResult()
   state.board = new Board()
-  state.board.init(els.aiStarts.checked ? AI : HUMAN)
+  state.startPlayer = els.aiStarts.checked ? AI : HUMAN
+  state.board.init(state.startPlayer)
   state.locked = false
   state.gameOver = false
   state.moves = []
   state.winningCells = []
   state.hoverCol = null
   state.hintCol = null
+  state.hintPending = false
   state.engineInfo = null
+  state.aiRequest++
+  state.hintRequest++
   setStatus(els.aiStarts.checked ? 'Die KI beginnt.' : 'Du beginnst.', 'Wähle eine Spalte.')
   render()
   if (els.aiStarts.checked) aiMove()

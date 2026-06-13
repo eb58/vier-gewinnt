@@ -16,6 +16,7 @@ https://eb58.github.io/vier-gewinnt/
 - Zug zurücknehmen
 - KI kann optional beginnen
 - Punkteanzeige, Zugzähler und Engine-Statistiken
+- KI-Suche in einem Web Worker, damit die Oberfläche bei hohen Suchtiefen bedienbar bleibt
 - Responsive Oberfläche ohne Build-Schritt
 
 ## Starten
@@ -60,13 +61,13 @@ Die Engine basiert auf `cf-engine.js` aus dem Connect-Four-Projekt von `eb58` un
 ├── styles.css      # Oberfläche und Layout
 ├── app.js          # UI-Logik und Engine-Anbindung
 ├── cf-engine.js    # Vier-Gewinnt-Engine
+├── engine-worker.js # Web Worker für KI-Suche
 ├── favicon.svg     # App-Icon
 └── README.md
 ```
 
 ## Nächste Ideen
 
-- Engine in einen Web Worker verschieben
 - Zeitkontrolle innerhalb der Suche verbessern
 - Bewertungsfunktion für nicht-terminale Stellungen ergänzen
 - GitHub Pages Deployment einrichten
