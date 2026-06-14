@@ -14,6 +14,8 @@ const state = {
   scores: { human: 0, ai: 0 },
   moves: [],
   winningCells: [],
+  lastAiCell: null,
+  lastAiMove: null,
   hoverCol: null,
   hintCol: null,
   hintPending: false,
@@ -21,7 +23,9 @@ const state = {
   engineSeq: 0,
   workerFailed: false,
   aiRequest: 0,
-  hintRequest: 0
+  hintRequest: 0,
+  audioContext: null,
+  winPulse: null
 }
 
 const els = {
@@ -44,6 +48,7 @@ const els = {
   difficultyLabel: $('#difficultyLabel'),
   lastAiMove: $('#lastAiMove'),
   depthStat: $('#depthStat'),
+  thinkingTimeStat: $('#thinkingTimeStat'),
   nodesStat: $('#nodesStat'),
   result: $('#result'),
   resultToken: $('#resultToken'),
@@ -129,6 +134,16 @@ const boardSnapshot = () => ({ startPlayer: state.startPlayer, moves: [...state.
 const sameSnapshot = (snapshot) => state.startPlayer === snapshot.startPlayer && state.moves.length === snapshot.moves.length && state.moves.every((move, idx) => move === snapshot.moves[idx])
 const fallbackMove = (board) => moveOrder.find((col) => board.heightCols[col] < ROWS)
 const normalizeResult = (board, result) => ({ ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(board) })
+const lastAiMoveFromMoves = (startPlayer, moves) => moves.reduce((acc, col) => {
+  const row = acc.heights[col]++
+  const player = acc.player
+  acc.player = 1 - acc.player
+  if (player === AI) {
+    acc.cell = `${ROWS - row - 1}-${col}`
+    acc.col = col
+  }
+  return acc
+}, { heights: Array(COLS).fill(0), player: startPlayer, cell: null, col: null })
 
 const runEngineOnMain = (opts, snapshot, onProgress = () => {}) => {
   const board = boardFromSnapshot(snapshot)
@@ -192,6 +207,7 @@ const columnFromPoint = (event) => {
 }
 
 const formatNodes = (nodes) => nodes >= 1000000 ? `${(nodes / 1000000).toFixed(1)}M` : nodes >= 1000 ? `${Math.round(nodes / 1000)}k` : `${nodes ?? '-'}`
+const formatThinkingTime = (time) => time === undefined ? '-' : `${time}s`
 const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
 const playerName = (player) => player === AI ? 'KI' : 'Mensch'
 const currentPlayerFromSnapshot = (snapshot) => snapshot.moves.length % 2 ? 1 - snapshot.startPlayer : snapshot.startPlayer
@@ -274,6 +290,78 @@ const launchConfetti = () => {
   setTimeout(() => els.confetti.replaceChildren(), 3300)
 }
 
+const ensureAudioContext = () => {
+  if (state.audioContext) return state.audioContext
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextCtor) return null
+  state.audioContext = new AudioContextCtor()
+  return state.audioContext
+}
+
+const playWinSound = async () => {
+  const audioContext = ensureAudioContext()
+  if (!audioContext) return
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume()
+    } catch {
+      return
+    }
+  }
+
+  const now = audioContext.currentTime
+  const notes = [392, 494, 587]
+  notes.forEach((frequency, index) => {
+    const osc = audioContext.createOscillator()
+    const gain = audioContext.createGain()
+    const start = now + index * 0.11
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(frequency, start)
+    osc.frequency.exponentialRampToValueAtTime(frequency * 1.03, start + 0.06)
+    gain.gain.setValueAtTime(0.0001, start)
+    gain.gain.exponentialRampToValueAtTime(0.03, start + 0.015)
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12)
+    osc.connect(gain)
+    gain.connect(audioContext.destination)
+    osc.start(start)
+    osc.stop(start + 0.13)
+    osc.onended = () => {
+      osc.disconnect()
+      gain.disconnect()
+    }
+  })
+}
+
+const playDropSound = async () => {
+  const audioContext = ensureAudioContext()
+  if (!audioContext) return
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume()
+    } catch {
+      return
+    }
+  }
+
+  const now = audioContext.currentTime
+  const gain = audioContext.createGain()
+  const osc = audioContext.createOscillator()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(280, now)
+  osc.frequency.exponentialRampToValueAtTime(190, now + 0.08)
+  gain.gain.setValueAtTime(0.0001, now)
+  gain.gain.exponentialRampToValueAtTime(0.035, now + 0.01)
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13)
+  osc.connect(gain)
+  gain.connect(audioContext.destination)
+  osc.start(now)
+  osc.stop(now + 0.14)
+  osc.onended = () => {
+    osc.disconnect()
+    gain.disconnect()
+  }
+}
+
 const render = () => {
   const isPlayable = !state.locked && !state.gameOver && state.board.currentPlayer === HUMAN
   els.board.className = `board ${isPlayable ? 'playable' : ''}`.trim()
@@ -283,7 +371,9 @@ const render = () => {
     const col = Number(cell.dataset.col)
     const player = cellPlayer(row, col)
     const isWin = state.winningCells.includes(`${row}-${col}`)
-    cell.className = ['cell', player, isWin ? 'win-cell' : ''].filter(Boolean).join(' ')
+    const isWinFlash = Boolean(state.winPulse && isWin)
+    const isLastAi = state.lastAiCell === `${row}-${col}`
+    cell.className = ['cell', player, isLastAi ? 'last-ai-cell' : '', isWin ? 'win-cell' : '', isWinFlash ? 'win-flash' : ''].filter(Boolean).join(' ')
     cell.setAttribute('aria-label', player ? `${player === 'human' ? 'Roter' : 'Gelber'} Stein` : 'Leeres Feld')
   })
 
@@ -301,8 +391,9 @@ const render = () => {
   els.hintMove.disabled = state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
   els.difficultyLabel.textContent = activeDifficulty().label
   els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : engineWorker && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
-  els.lastAiMove.textContent = state.engineInfo?.move === undefined ? '-' : `Spalte ${state.engineInfo.move + 1}`
+  els.lastAiMove.textContent = state.lastAiMove === null ? '-' : `Spalte ${state.lastAiMove + 1}`
   els.depthStat.textContent = state.engineInfo?.depth ?? '-'
+  els.thinkingTimeStat.textContent = formatThinkingTime(state.engineInfo?.elapsedTime)
   els.nodesStat.textContent = state.engineInfo ? formatNodes(state.engineInfo.nodes) : '-'
   setTurn()
 }
@@ -312,10 +403,12 @@ const finishIfNeeded = (col, player, didWin) => {
     state.gameOver = true
     state.locked = false
     state.winningCells = winningCellsForMove(col, player)
+    state.winPulse = `${Date.now()}-${col}-${player}`
     state.scores[player === HUMAN ? 'human' : 'ai']++
     setStatus(player === HUMAN ? 'Sieg!' : 'KI-Sieg.', player === HUMAN ? 'Vier Steine in einer Reihe.' : 'Neue Runde, neue Chance.', player === HUMAN ? 'win' : 'loss')
     showResult(player === HUMAN ? 'human' : 'ai', player === HUMAN ? 'Du gewinnst.' : 'Die KI gewinnt.', player === HUMAN ? 'Sauber ausgespielt.' : 'Die Engine hat die Reihe geschlossen.')
     if (player === HUMAN) launchConfetti()
+    playWinSound()
     render()
     return true
   }
@@ -333,13 +426,19 @@ const finishIfNeeded = (col, player, didWin) => {
 
 const playMove = (col) => {
   const player = state.board.currentPlayer
+  const row = state.board.heightCols[col]
   const didWin = state.board.checkWinForColumn(col)
   state.board.doMove(col)
   state.moves.push(col)
+  if (player === AI) {
+    state.lastAiCell = `${ROWS - row - 1}-${col}`
+    state.lastAiMove = col
+  }
   state.hoverCol = null
   state.hintCol = null
   state.hintPending = false
   state.hintRequest++
+  playDropSound()
   render()
   return finishIfNeeded(col, player, didWin)
 }
@@ -441,6 +540,9 @@ const undoMove = () => {
   state.aiRequest++
   state.hintRequest++
   state.winningCells = []
+  const lastAiMove = lastAiMoveFromMoves(state.startPlayer, state.moves)
+  state.lastAiCell = lastAiMove.cell
+  state.lastAiMove = lastAiMove.col
   setStatus('Zug zurückgenommen.', state.board.currentPlayer === HUMAN ? 'Du bist wieder dran.' : 'KI ist am Zug.')
   render()
   if (state.board.currentPlayer === AI) aiMove()
@@ -455,12 +557,15 @@ const newGame = () => {
   state.gameOver = false
   state.moves = []
   state.winningCells = []
+  state.lastAiCell = null
+  state.lastAiMove = null
   state.hoverCol = null
   state.hintCol = null
   state.hintPending = false
   state.engineInfo = null
   state.aiRequest++
   state.hintRequest++
+  state.winPulse = null
   setStatus(els.aiStarts.checked ? 'Die KI beginnt.' : 'Du beginnst.', 'Wähle eine Spalte.')
   render()
   if (els.aiStarts.checked) aiMove()
@@ -528,6 +633,7 @@ els.resultNewGame.addEventListener('click', newGame)
 els.undoMove.addEventListener('click', undoMove)
 els.hintMove.addEventListener('click', requestHint)
 els.aiStarts.addEventListener('change', newGame)
+document.addEventListener('pointerdown', ensureAudioContext, { once: true })
 document.addEventListener('keydown', (event) => {
   const col = Number(event.key) - 1
   if (col >= 0 && col < COLS) humanMove(col)
