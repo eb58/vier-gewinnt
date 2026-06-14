@@ -507,10 +507,10 @@ h2 {
 }
 
 .command-center {
-  align-self: stretch;
+  align-self: start;
   padding: 18px;
   display: grid;
-  align-content: center;
+  align-content: start;
   gap: 18px;
 }
 
