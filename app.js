@@ -230,8 +230,7 @@ const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
 }
 
 const logSearchDepth = (kind, info, perspective) => {
-  const meaning = scoreMeaning(info.score, perspective, info.depth)
-  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}${meaning ? `, Bewertung: ${meaning}` : ''}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
+  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
 }
 
 const logSearchEnd = ({ kind, result, col, perspective }) => {
