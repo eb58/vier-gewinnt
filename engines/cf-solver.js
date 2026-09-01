@@ -1,16 +1,172 @@
-import { Board, COLS, ROWS } from './cf-engine.js'
+export const COLS = 7
+export const ROWS = 6
 
-export { Board }
-
+// 49-Bit-Layout nach Pons: Bit (col * 7 + row), Zeile 6 jeder Spalte ist ein Waechterbit
+// und bleibt leer. Dadurch ist jede Gewinnrichtung ein konstanter Bitabstand - vertikal 1,
+// horizontal 7, Diagonalen 6 und 8 - ohne dass ein Shift in die Nachbarspalte laeuft.
+// JS kann nur 32 Bit bitweise, also fuehren wir jeden Wert als Paar (lo, hi): lo sind die
+// Bits 0..31, hi die Bits 32..48.
+const H1 = ROWS + 1
+const HI_MASK = 0x1ffff // 17 Bit
 const AREA = COLS * ROWS
-const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
-const SEARCH_ABORTED = Symbol('solver-aborted')
-const TIME_CHECK_MASK = 1023
-const LOST = -1 // Rueckgabe von nonLosingMoves, wenn jeder Zug verliert
 
-// Score nach Pons: ein Sieg mit dem naechsten Stein bei `stones` Steinen auf dem Brett ist
-// (43 - stones) / 2 wert. Frueher Sieg = hoeher, Remis = 0, Niederlage spiegelbildlich.
-// Der Wertebereich ist damit nur [-18, 18] - klein genug, um ihn binaer einzugrenzen.
+const shlLo = (lo, k) => lo << k
+const shlHi = (lo, hi, k) => ((hi << k) | (lo >>> (32 - k))) & HI_MASK
+const shrLo = (lo, hi, k) => (lo >>> k) | (hi << (32 - k))
+const shrHi = (hi, k) => hi >>> k
+
+const popcount = (x) => {
+  x -= (x >> 1) & 0x55555555
+  x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+  x = (x + (x >> 4)) & 0x0f0f0f0f
+  return (x * 0x01010101) >> 24
+}
+
+const bitLo = (col, row) => { const b = col * H1 + row; return b < 32 ? 1 << b : 0 }
+const bitHi = (col, row) => { const b = col * H1 + row; return b < 32 ? 0 : 1 << (b - 32) }
+const range = (n) => [...Array(n).keys()]
+
+const BOTTOM_LO = range(COLS).reduce((m, c) => m | bitLo(c, 0), 0)
+const BOTTOM_HI = range(COLS).reduce((m, c) => m | bitHi(c, 0), 0)
+const BOARD_LO = range(COLS).reduce((m, c) => range(ROWS).reduce((n, r) => n | bitLo(c, r), m), 0)
+const BOARD_HI = range(COLS).reduce((m, c) => range(ROWS).reduce((n, r) => n | bitHi(c, r), m), 0)
+const COLUMN_LO = Int32Array.from(range(COLS), (c) => range(ROWS).reduce((m, r) => m | bitLo(c, r), 0))
+const COLUMN_HI = Int32Array.from(range(COLS), (c) => range(ROWS).reduce((m, r) => m | bitHi(c, r), 0))
+const TOP_LO = Int32Array.from(range(COLS), (c) => bitLo(c, ROWS - 1))
+const TOP_HI = Int32Array.from(range(COLS), (c) => bitHi(c, ROWS - 1))
+
+// Ergebnis der 49-Bit-Rechenschritte. Modulweite Ausgabe statt Rueckgabeobjekt, damit im
+// Suchkern nichts alloziert wird - der Wert wird immer sofort ausgelesen.
+let outLo = 0
+let outHi = 0
+
+// 49-Bit-Addition mit Uebertrag. mask + bottom laesst in jeder Spalte einen Uebertrag bis
+// zur ersten freien Zelle laufen und liefert so alle spielbaren Felder auf einmal.
+const add49 = (aLo, aHi, bLo, bHi) => {
+  const sum = (aLo >>> 0) + (bLo >>> 0)
+  outLo = sum | 0
+  outHi = (aHi + bHi + (sum > 0xffffffff ? 1 : 0)) & HI_MASK
+}
+
+// Alle Felder, auf denen `p` mit einem weiteren Stein vier in einer Reihe haette - auch
+// solche, die noch nicht spielbar sind. Das ist der Kern: eine Berechnung statt sieben
+// Spaltenpruefungen, und sie liefert die ganze Drohungsmenge statt nur der ersten.
+const computeWinning = (pLo, pHi, mLo, mHi) => {
+  let rLo = shlLo(pLo, 1) & shlLo(pLo, 2) & shlLo(pLo, 3)
+  let rHi = shlHi(pLo, pHi, 1) & shlHi(pLo, pHi, 2) & shlHi(pLo, pHi, 3)
+
+  for (const k of [H1, ROWS, ROWS + 2]) { // horizontal, Diagonale \, Diagonale /
+    const k2 = k * 2
+    const k3 = k * 3
+    const upLo = shlLo(pLo, k)
+    const upHi = shlHi(pLo, pHi, k)
+    const up2Lo = shlLo(pLo, k2)
+    const up2Hi = shlHi(pLo, pHi, k2)
+    const up3Lo = shlLo(pLo, k3)
+    const up3Hi = shlHi(pLo, pHi, k3)
+    const dnLo = shrLo(pLo, pHi, k)
+    const dnHi = shrHi(pHi, k)
+    const dn2Lo = shrLo(pLo, pHi, k2)
+    const dn2Hi = shrHi(pHi, k2)
+    const dn3Lo = shrLo(pLo, pHi, k3)
+    const dn3Hi = shrHi(pHi, k3)
+
+    let pairLo = upLo & up2Lo
+    let pairHi = upHi & up2Hi
+    rLo |= (pairLo & up3Lo) | (pairLo & dnLo)
+    rHi |= (pairHi & up3Hi) | (pairHi & dnHi)
+
+    pairLo = dnLo & dn2Lo
+    pairHi = dnHi & dn2Hi
+    rLo |= (pairLo & upLo) | (pairLo & dn3Lo)
+    rHi |= (pairHi & upHi) | (pairHi & dn3Hi)
+  }
+
+  outLo = rLo & BOARD_LO & ~mLo
+  outHi = rHi & BOARD_HI & ~mHi
+}
+
+export class Board {
+  constructor(FEN = '') {
+    this.init()
+    this.FEN = FEN.trim().replaceAll(' ', '')
+    this.FEN.split('').forEach((c) => this.doMove(Number(c) - 1))
+  }
+
+  init() {
+    this.curLo = 0 // Steine des Spielers am Zug
+    this.curHi = 0
+    this.maskLo = 0 // alle Steine
+    this.maskHi = 0
+    this.cntMoves = 0
+  }
+
+  heightOf = (col) => {
+    let n = 0
+    while (n < ROWS && ((n + col * H1 < 32 ? this.maskLo & (1 << (n + col * H1)) : this.maskHi & (1 << (n + col * H1 - 32))) !== 0)) n++
+    return n
+  }
+
+  canPlay = (col) => (this.maskLo & TOP_LO[col]) === 0 && (this.maskHi & TOP_HI[col]) === 0
+  isDraw = () => this.cntMoves >= AREA
+
+  // Der Zug ist das unterste freie Feld der Spalte: mask + bottom, auf die Spalte maskiert.
+  moveBit = (col) => {
+    add49(this.maskLo, this.maskHi, BOTTOM_LO, BOTTOM_HI)
+    outLo &= COLUMN_LO[col]
+    outHi &= COLUMN_HI[col]
+  }
+
+  doMoveBit = (bLo, bHi) => {
+    this.curLo ^= this.maskLo
+    this.curHi ^= this.maskHi
+    this.maskLo |= bLo
+    this.maskHi |= bHi
+    this.cntMoves++
+  }
+
+  undoMoveBit = (bLo, bHi) => {
+    this.maskLo &= ~bLo
+    this.maskHi &= ~bHi
+    this.curLo ^= this.maskLo
+    this.curHi ^= this.maskHi
+    this.cntMoves--
+  }
+
+  doMove = (col) => {
+    this.moveBit(col)
+    this.doMoveBit(outLo, outHi)
+  }
+
+  // Gewinnt der Spieler am Zug, wenn er in dieser Spalte setzt?
+  isWinningMove = (col) => {
+    computeWinning(this.curLo, this.curHi, this.maskLo, this.maskHi)
+    const wLo = outLo
+    const wHi = outHi
+    this.moveBit(col)
+    return ((wLo & outLo) | (wHi & outHi)) !== 0
+  }
+
+  // Eindeutiger 49-Bit-Schluessel der Stellung: current + mask + bottom. Zwei verschiedene
+  // Stellungen koennen ihn nicht teilen, die TT verifiziert damit exakt statt nur wahrscheinlich.
+  key = () => {
+    add49(this.curLo, this.curHi, this.maskLo, this.maskHi)
+    add49(outLo, outHi, BOTTOM_LO, BOTTOM_HI)
+  }
+
+  toString = () => {
+    const at = (col, row) => {
+      const b = col * H1 + row
+      const inMask = b < 32 ? this.maskLo & (1 << b) : this.maskHi & (1 << (b - 32))
+      if (!inMask) return ' _ '
+      const inCur = b < 32 ? this.curLo & (1 << b) : this.curHi & (1 << (b - 32))
+      // curLo gehoert dem Spieler am Zug; bei gerader Zugzahl ist das Spieler 0
+      return (inCur !== 0) === (this.cntMoves % 2 === 0) ? ' X ' : ' O '
+    }
+    return range(ROWS).reduce((acc, r) => acc + range(COLS).reduce((line, c) => line + at(c, ROWS - 1 - r), '') + '\n', '')
+  }
+}
+
 const winScore = (stones) => (AREA + 1 - stones) >> 1
 const lossScore = (stones) => -((AREA - stones) >> 1)
 
@@ -19,67 +175,51 @@ const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 class TranspositionTable {
   constructor(bits) {
     this.mask = (1 << bits) - 1
-    this.keys = new Uint32Array(this.mask + 1)
+    this.keysLo = new Uint32Array(this.mask + 1)
+    this.keysHi = new Uint32Array(this.mask + 1)
     this.scores = new Int8Array(this.mask + 1)
     this.flags = new Int8Array(this.mask + 1)
     this.bestMoves = new Uint8Array(this.mask + 1)
   }
 
-  // Keine Tiefe mehr: der Solver sucht immer bis zum Terminal, ein Eintrag gilt damit
-  // absolut fuer die Stellung und nicht nur bis zu einer Resttiefe.
-  store(hash, lock, score, flag, bestMove = -1) {
-    const idx = hash & this.mask
-    this.keys[idx] = lock
-    this.scores[idx] = score
-    this.flags[idx] = flag
-    this.bestMoves[idx] = bestMove >= 0 ? bestMove + 1 : 0
+  // Index aus beiden Woertern gemischt, verifiziert wird aber gegen den vollen Schluessel -
+  // deshalb sind Falsch-Treffer hier ausgeschlossen, nicht nur unwahrscheinlich.
+  index = (kLo, kHi) => (Math.imul(kLo, 0x9e3779b1) ^ Math.imul(kHi, 0x85ebca77)) & this.mask
+
+  store(kLo, kHi, score, flag, bestMove) {
+    const i = this.index(kLo, kHi)
+    this.keysLo[i] = kLo
+    this.keysHi[i] = kHi
+    this.scores[i] = score
+    this.flags[i] = flag
+    this.bestMoves[i] = bestMove + 1
     return score
   }
 
-  probe(hash, lock, alpha, beta) {
-    const idx = hash & this.mask
-    if (this.keys[idx] !== lock || this.flags[idx] === 0) return null
-    const score = this.scores[idx]
-    const flag = this.flags[idx]
+  probe(kLo, kHi, alpha, beta) {
+    const i = this.index(kLo, kHi)
+    if (this.keysLo[i] !== kLo >>> 0 || this.keysHi[i] !== kHi >>> 0 || this.flags[i] === 0) return null
+    const score = this.scores[i]
+    const flag = this.flags[i]
     if (flag === TT_FLAGS.exact) return score
     if (flag === TT_FLAGS.lower_bound && score >= beta) return score
     if (flag === TT_FLAGS.upper_bound && score <= alpha) return score
     return null
   }
 
-  getBestMove(hash, lock) {
-    const idx = hash & this.mask
-    return this.keys[idx] === lock && this.bestMoves[idx] > 0 ? this.bestMoves[idx] - 1 : -1
+  getBestMove(kLo, kHi) {
+    const i = this.index(kLo, kHi)
+    return this.keysLo[i] === (kLo >>> 0) && this.keysHi[i] === (kHi >>> 0) ? this.bestMoves[i] - 1 : -1
   }
 }
 
 const ttPool = new Map()
-const getTranspositionTable = (bits = 23) => ttPool.get(bits) ?? ttPool.set(bits, new TranspositionTable(bits)).get(bits)
+const getTranspositionTable = (bits = 22) => ttPool.get(bits) ?? ttPool.set(bits, new TranspositionTable(bits)).get(bits)
 export const resetTranspositionTables = () => ttPool.clear()
 
-// Fuellt `out` mit den Zuegen, die nicht sofort verlieren, und liefert deren Anzahl.
-// LOST bedeutet: jeder Zug verliert, die Stellung ist bei perfektem Gegenspiel verloren.
-const nonLosingMoves = (board, out) => {
-  const opponent = 1 - board.currentPlayer
-  let forced = -1
-  let forcedCount = 0
-  for (const c of CENTER_ORDER) {
-    if (board.heightCols[c] >= ROWS || !board.checkWinning(c, opponent)) continue
-    if (++forcedCount > 1) return LOST // zwei Drohungen, nur eine blockbar
-    forced = c
-  }
-
-  let n = 0
-  for (const c of CENTER_ORDER) {
-    const row = board.heightCols[c]
-    if (row >= ROWS) continue
-    if (forcedCount === 1 && c !== forced) continue
-    // Ein Zug, der dem Gegner direkt darueber den Sieg schenkt, verliert ebenfalls.
-    if (board.checkWinning(c, opponent, row + 1)) continue
-    out[n++] = c
-  }
-  return n === 0 ? LOST : n
-}
+const SEARCH_ABORTED = Symbol('solver-aborted')
+const TIME_CHECK_MASK = 1023
+const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
 
 class Solver {
   constructor(board, info, tt, timeOut) {
@@ -87,7 +227,70 @@ class Solver {
     this.info = info
     this.tt = tt
     this.timeOut = timeOut
-    this.moveLists = Array.from({ length: AREA + 1 }, () => new Uint8Array(COLS))
+    // Ein Zugpuffer je Ebene, damit die Rekursion nichts alloziert.
+    this.cols = Array.from({ length: AREA + 1 }, () => new Int32Array(COLS))
+    this.bitsLo = Array.from({ length: AREA + 1 }, () => new Int32Array(COLS))
+    this.bitsHi = Array.from({ length: AREA + 1 }, () => new Int32Array(COLS))
+    this.scores = Array.from({ length: AREA + 1 }, () => new Int32Array(COLS))
+  }
+
+  // Sammelt die Zuege, die nicht sofort verlieren, und ordnet sie nach der Anzahl der
+  // Drohungen, die sie erzeugen. Beides faellt aus derselben Bitrechnung ab.
+  generate = (ply) => {
+    const board = this.board
+    // Gegnerposition = alle Steine ohne die eigenen
+    const oppLo = board.curLo ^ board.maskLo
+    const oppHi = board.curHi ^ board.maskHi
+
+    add49(board.maskLo, board.maskHi, BOTTOM_LO, BOTTOM_HI)
+    let possLo = outLo & BOARD_LO
+    let possHi = outHi & BOARD_HI
+
+    computeWinning(oppLo, oppHi, board.maskLo, board.maskHi)
+    const oppWinLo = outLo
+    const oppWinHi = outHi
+
+    const forcedLo = possLo & oppWinLo
+    const forcedHi = possHi & oppWinHi
+    if ((forcedLo | forcedHi) !== 0) {
+      // Mehr als eine Drohung laesst sich nicht blocken.
+      if (popcount(forcedLo) + popcount(forcedHi) > 1) return -1
+      possLo = forcedLo
+      possHi = forcedHi
+    }
+
+    // Zuege streichen, die dem Gegner direkt darueber den Sieg schenken.
+    possLo &= ~shrLo(oppWinLo, oppWinHi, 1)
+    possHi &= ~shrHi(oppWinHi, 1)
+    if ((possLo | possHi) === 0) return -1
+
+    const cols = this.cols[ply]
+    const bitsLo = this.bitsLo[ply]
+    const bitsHi = this.bitsHi[ply]
+    const scores = this.scores[ply]
+    let n = 0
+
+    for (const c of CENTER_ORDER) {
+      const bLo = possLo & COLUMN_LO[c]
+      const bHi = possHi & COLUMN_HI[c]
+      if ((bLo | bHi) === 0) continue
+      computeWinning(board.curLo | bLo, board.curHi | bHi, board.maskLo | bLo, board.maskHi | bHi)
+      const score = popcount(outLo) + popcount(outHi)
+      // Einfuegesortierung, absteigend nach erzeugten Drohungen
+      let i = n++
+      while (i > 0 && scores[i - 1] < score) {
+        scores[i] = scores[i - 1]
+        cols[i] = cols[i - 1]
+        bitsLo[i] = bitsLo[i - 1]
+        bitsHi[i] = bitsHi[i - 1]
+        i--
+      }
+      scores[i] = score
+      cols[i] = c
+      bitsLo[i] = bLo
+      bitsHi[i] = bHi
+    }
+    return n
   }
 
   negamax = (alpha, beta, ply = 0) => {
@@ -98,15 +301,10 @@ class Solver {
     const stones = board.cntMoves
     if (stones === AREA) return 0
 
-    const moves = this.moveLists[ply]
-    const n = nonLosingMoves(board, moves)
-    if (n === LOST) return lossScore(stones)
-
-    // Zwei Steine vor Schluss kann niemand mehr gewinnen, ohne dass es oben aufgefallen waere.
+    const n = this.generate(ply)
+    if (n < 0) return lossScore(stones)
     if (stones >= AREA - 2) return 0
 
-    // Fenster an der Restzugzahl verengen: frueher als in (AREA-1-stones)/2 Zuegen kann
-    // niemand mehr gewinnen. Das schneidet ganze Teilbaeume, bevor sie betreten werden.
     const max = (AREA - 1 - stones) >> 1
     if (beta > max) {
       beta = max
@@ -118,49 +316,49 @@ class Solver {
       if (alpha >= beta) return alpha
     }
 
-    const hash = board.hash
-    const lock = board.lock
-    const cached = this.tt.probe(hash, lock, alpha, beta)
+    board.key()
+    const kLo = outLo
+    const kHi = outHi
+    const cached = this.tt.probe(kLo, kHi, alpha, beta)
     if (cached !== null) return cached
 
     const originalAlpha = alpha
-    const ttMove = this.tt.getBestMove(hash, lock)
-    let bestMove = moves[0]
+    const cols = this.cols[ply]
+    const bitsLo = this.bitsLo[ply]
+    const bitsHi = this.bitsHi[ply]
+    const ttMove = this.tt.getBestMove(kLo, kHi)
+    let bestMove = cols[0]
 
     for (let i = -1; i < n; i++) {
-      // Der TT-Zug zuerst, danach die uebrigen in Mittenreihenfolge.
-      const c = i < 0 ? ttMove : moves[i]
-      if (i < 0 ? c < 0 : c === ttMove) continue
-      if (i < 0 && !this.isPlayable(c, moves, n)) continue
+      let idx = i
+      if (i < 0) {
+        if (ttMove < 0) continue
+        idx = -1
+        for (let j = 0; j < n; j++) if (cols[j] === ttMove) { idx = j; break }
+        if (idx < 0) continue
+      } else if (cols[i] === ttMove) continue
 
-      board.doMove(c)
+      const c = cols[idx]
+      board.doMoveBit(bitsLo[idx], bitsHi[idx])
       const childScore = this.negamax(-beta, -alpha, ply + 1)
-      board.undoMove(c)
+      board.undoMoveBit(bitsLo[idx], bitsHi[idx])
       if (childScore === SEARCH_ABORTED) return SEARCH_ABORTED
 
       const score = -childScore
-      if (score >= beta) return this.tt.store(hash, lock, score, TT_FLAGS.lower_bound, c)
+      if (score >= beta) return this.tt.store(kLo, kHi, score, TT_FLAGS.lower_bound, c)
       if (score > alpha) {
         alpha = score
         bestMove = c
       }
     }
 
-    const flag = alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound
-    return this.tt.store(hash, lock, alpha, flag, bestMove)
-  }
-
-  isPlayable = (c, moves, n) => {
-    for (let i = 0; i < n; i++) if (moves[i] === c) return true
-    return false
+    return this.tt.store(kLo, kHi, alpha, alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound, bestMove)
   }
 }
 
-// Binaere Suche ueber den Score: jeder Schritt ist eine Suche mit leerem Fenster, die nur
-// "groesser oder kleiner als med" beantwortet. Das ist der Grund, warum ein Solver schnell
-// ist - ein volles Fenster wuerde nie so scharf schneiden.
+// Binaere Suche ueber den Score, jeder Schritt eine Suche mit leerem Fenster.
 export const solve = (board, opts = {}) => {
-  const settings = { maxThinkingTime: 60000, ttBits: 23, ...opts }
+  const settings = { maxThinkingTime: 60000, ttBits: 22, ...opts }
   const start = performance.now()
   const info = { nodes: 0, stopAt: Date.now() + settings.maxThinkingTime }
   const timeOut = () => Date.now() >= info.stopAt
@@ -195,24 +393,24 @@ export const solve = (board, opts = {}) => {
   }
 }
 
-// Bester Zug: die Wurzelzuege einzeln aufloesen. Verlierende Zuege sind vorher schon raus.
 export const findBestMove = (board, opts = {}) => {
   const start = performance.now()
-  const moves = new Uint8Array(COLS)
-  const n = nonLosingMoves(board, moves)
-  const playable = CENTER_ORDER.filter((c) => board.heightCols[c] < ROWS)
-  if (n === LOST) return { bestMove: playable[0], score: lossScore(board.cntMoves), solved: true, nodes: 0, elapsedTime: '0.000' }
+  const playable = CENTER_ORDER.filter((c) => board.canPlay(c))
+  const winner = playable.find((c) => board.isWinningMove(c))
+  if (winner !== undefined) return { bestMove: winner, score: winScore(board.cntMoves), solved: true, nodes: 0, elapsedTime: '0.000' }
 
-  let best = moves[0]
+  let best = playable[0]
   let bestScore = -Infinity
   let nodes = 0
   let solved = true
 
-  for (let i = 0; i < n; i++) {
-    const c = moves[i]
-    board.doMove(c)
+  for (const c of playable) {
+    board.moveBit(c)
+    const bLo = outLo
+    const bHi = outHi
+    board.doMoveBit(bLo, bHi)
     const r = solve(board, opts)
-    board.undoMove(c)
+    board.undoMoveBit(bLo, bHi)
     nodes += r.nodes
     if (!r.solved) { solved = false; continue }
     if (-r.score > bestScore) {
