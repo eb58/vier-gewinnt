@@ -150,8 +150,9 @@ export class Board {
   opponentPlayer = () => 1 - this.currentPlayer
   isDraw = () => this.cntMoves >= COLS * ROWS
 
-  checkWinning = (col, player) => {
-    const row = this.heightCols[col]
+  // row ist normalerweise die aktuelle Fallhöhe. Der Solver braucht die Prüfung auch eine
+  // Zeile höher, um Züge zu erkennen, die dem Gegner direkt darüber einen Gewinn schenken.
+  checkWinning = (col, player, row = this.heightCols[col]) => {
     if (row >= ROWS) return false
 
     const bb = this.bitboards[player]
