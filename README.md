@@ -21,18 +21,44 @@ https://eb58.github.io/vier-gewinnt/
 
 ## Starten
 
-Das Spiel ist eine statische Web-App. Ein lokaler Server reicht aus:
+Das Spiel ist eine statische Web-App. Ein direkter Doppelklick auf `index.html`
+funktioniert nicht, weil `app.js` als ES-Modul geladen wird – es braucht `http://`.
+Ein beliebiger lokaler Static-Server reicht:
 
-```powershell
-cd "C:\Users\erich\Documents\Codex\Vier Gewinnt"
-python -m http.server 4173 --bind 127.0.0.1
-```
+- **VS Code:** Rechtsklick auf `index.html` -> „Open with Live Server“
+- **Node:** `npx serve -l 4173`
 
-Danach im Browser öffnen:
+Danach im Browser öffnen (Port ggf. anpassen):
 
 ```text
 http://127.0.0.1:4173
 ```
+
+## Tests
+
+Abhängigkeiten installieren und die Engine-Tests ausführen:
+
+```bash
+npm install
+npm test
+```
+
+Für die Entwicklung können die Tests im Watch-Modus laufen:
+
+```bash
+npm run test:watch
+```
+
+## Stellung analysieren
+
+Eine Stellung lässt sich auch direkt in der Konsole untersuchen. Die Argumente
+sind Zugfolge, maximale Suchtiefe und maximale Denkzeit in Millisekunden:
+
+```bash
+npm run analyze -- 14141 6 1000
+```
+
+Die Zugfolge verwendet die Spaltennummern `1` bis `7`.
 
 ## Steuerung
 
@@ -51,7 +77,7 @@ http://127.0.0.1:4173
 | Profi | 18 |
 | Meister | 23 |
 
-Die Engine basiert auf `cf-engine.js` aus dem Connect-Four-Projekt von `eb58` und wurde für die UI-Anbindung angepasst.
+Die produktive Engine unter `engines/cf-engine.js` basiert auf dem Connect-Four-Projekt von `eb58` und wurde für die UI-Anbindung angepasst.
 
 ## Projektstruktur
 
@@ -60,9 +86,13 @@ Die Engine basiert auf `cf-engine.js` aus dem Connect-Four-Projekt von `eb58` un
 ├── index.html      # App-Struktur
 ├── styles.css      # Oberfläche und Layout
 ├── app.js          # UI-Logik und Engine-Anbindung
-├── cf-engine.js    # Vier-Gewinnt-Engine
 ├── engine-worker.js # Web Worker für KI-Suche
+├── engines/
+│   └── cf-engine.js # Vier-Gewinnt-Engine
 ├── favicon.svg     # App-Icon
+├── run.js          # CLI zur Analyse einer Stellung
+├── tests/          # Engine-Tests
+├── data/           # Teststellungen
 └── README.md
 ```
 
@@ -70,4 +100,3 @@ Die Engine basiert auf `cf-engine.js` aus dem Connect-Four-Projekt von `eb58` un
 
 - Zeitkontrolle innerhalb der Suche verbessern
 - Bewertungsfunktion für nicht-terminale Stellungen ergänzen
-- GitHub Pages Deployment einrichten

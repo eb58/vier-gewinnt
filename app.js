@@ -1,4 +1,4 @@
-import { Board, COLS, ROWS, findBestMove } from './cf-engine.js'
+import { Board, COLS, ROWS, findBestMove } from './engines/cf-engine.js'
 
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]

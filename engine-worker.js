@@ -1,4 +1,4 @@
-import { Board, ROWS, findBestMove } from './cf-engine.js'
+import { Board, ROWS, findBestMove } from './engines/cf-engine.js'
 
 const moveOrder = [3, 2, 4, 1, 5, 0, 6]
 

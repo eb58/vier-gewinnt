@@ -1,7 +1,6 @@
 const range = (n) => [...Array(n).keys()]
 const timer = (start = performance.now()) => ({ elapsedTime: () => ((performance.now() - start) / 1000).toFixed(3) })
 
-const NN = (1 << 23) - 1
 const MAXVAL = 100
 export const COLS = 7
 export const ROWS = 6
@@ -26,24 +25,24 @@ class TranspositionTable {
 
   store(hash, depth, score, flag, bestMove = -1) {
     const idx = this.index(hash)
-    score = score === -0 ? 0 : score
+    const normalizedScore = score === -0 ? 0 : score
     this.keys[idx] = hash
     this.depths[idx] = depth
-    this.scores[idx] = score
+    this.scores[idx] = normalizedScore
     this.flags[idx] = flag
     if (this.bestMoves) this.bestMoves[idx] = Number.isInteger(bestMove) ? bestMove : -1
-    return score
+    return normalizedScore
   }
 
   getScore(hash, depth, alpha, beta) {
     const idx = this.index(hash)
-    if (this.keys[idx] === hash && this.depths[idx] >= depth) {
-      const score = this.scores[idx]
-      const flag = this.flags[idx]
-      if (flag === TT_FLAGS.exact) return score
-      if (flag === TT_FLAGS.lower_bound && score >= beta) return score
-      if (flag === TT_FLAGS.upper_bound && score <= alpha) return score
-    }
+    if (this.keys[idx] !== hash || this.depths[idx] < depth) return null
+
+    const score = this.scores[idx]
+    const flag = this.flags[idx]
+    if (flag === TT_FLAGS.exact) return score
+    if (flag === TT_FLAGS.lower_bound && score >= beta) return score
+    if (flag === TT_FLAGS.upper_bound && score <= alpha) return score
     return null
   }
 
@@ -78,7 +77,7 @@ export class Board {
   constructor(FEN = '') {
     this.init()
     this.FEN = FEN.trim().replaceAll(' ', '')
-    this.FEN.split('').forEach((c) => this.doMove(c - 1))
+    this.FEN.split('').forEach((c) => this.doMove(Number(c) - 1))
   }
 
   doMove = (c) => {
@@ -100,6 +99,9 @@ export class Board {
   }
 
   checkWinForColumn = (c) => this.checkWinning(c, this.currentPlayer)
+  getHeightOfCol = (c) => this.heightCols[c]
+  opponentPlayer = () => 1 - this.currentPlayer
+  isDraw = () => this.cntMoves >= COLS * ROWS
 
   checkWinning = (col, player) => {
     const row = this.heightCols[col]
@@ -137,9 +139,9 @@ export class Board {
 
   toString = () => {
     const bb = this.bitboards
-    const has = (bb, idx) => (idx < 32 ? bb[0] & (1 << idx) : bb[1] & (1 << (idx - 32)))
-    const symbol = (idx) => (has(bb[0], idx) ? ' X ' : has(bb[1], idx) ? ' O ' : ' _ ')
-    return range(ROWS).reduce((a, r) => a + range(COLS).reduce((a, c) => a + symbol((ROWS - r - 1) * COLS + c), '') + '\n', '')
+    const has = (player, idx) => (idx < 32 ? bb[player][0] & (1 << idx) : bb[player][1] & (1 << (idx - 32)))
+    const symbol = (idx) => (has(0, idx) ? ' X ' : has(1, idx) ? ' O ' : ' _ ')
+    return range(ROWS).reduce((acc, row) => acc + range(COLS).reduce((line, col) => line + symbol((ROWS - row - 1) * COLS + col), '') + '\n', '')
   }
 
   print = () => console.log('FEN:', this.FEN, '\n', this.toString().trim())
@@ -147,8 +149,7 @@ export class Board {
 
 const orderedColumns = (board, columns, ttMove) => {
   const moves = []
-  const hasTTMove = Number.isInteger(ttMove) && board.heightCols[ttMove] < ROWS
-  if (hasTTMove) moves.push(ttMove)
+  if (Number.isInteger(ttMove) && board.heightCols[ttMove] < ROWS) moves.push(ttMove)
   for (const c of columns)
     if (board.heightCols[c] < ROWS && c !== ttMove) moves.push(c)
   return moves
@@ -167,7 +168,7 @@ class CfEngine {
     const cachedScore = this.tt.getScore(hash, depth, alpha, beta)
     if (cachedScore !== null) return cachedScore
 
-    if (depth === 0 || this.board.cntMoves === 42) return 0
+    if (depth === 0 || this.board.cntMoves === COLS * ROWS) return 0
 
     ++this.searchInfo.nodes
 
@@ -194,9 +195,7 @@ class CfEngine {
         node.bestMove = c
         if (root) this.searchInfo.bestMove = c
       }
-      if (node.alpha >= beta) {
-        return this.tt.store(hash, depth, node.alpha, TT_FLAGS.lower_bound, c)
-      }
+      if (node.alpha >= beta) return this.tt.store(hash, depth, node.alpha, TT_FLAGS.lower_bound, c)
     }
 
     const flag = node.alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound
@@ -206,19 +205,19 @@ class CfEngine {
 
 export const findBestMove = (board, opts) => {
   const t = timer()
-  opts = { maxThinkingTime: 1000, minDepth: 1, maxDepth: 42 - board.cntMoves, ...opts }
-  const searchInfo = { nodes: 0, stopAt: Date.now() + opts.maxThinkingTime }
+  const settings = { maxThinkingTime: 1000, minDepth: 1, maxDepth: COLS * ROWS - board.cntMoves, ...opts }
+  const searchInfo = { nodes: 0, stopAt: Date.now() + settings.maxThinkingTime }
   const timeOut = () => Date.now() >= searchInfo.stopAt
   const columns = CENTER_ORDER.filter((c) => board.heightCols[c] < ROWS)
-  const useIterativeBestMove = opts.maxDepth > opts.minDepth
-  const tt = new TranspositionTable(opts.maxDepth, useIterativeBestMove)
+  const useIterativeBestMove = settings.maxDepth > settings.minDepth
+  const tt = new TranspositionTable(settings.maxDepth, useIterativeBestMove)
 
-  for (const depth of range(opts.maxDepth - opts.minDepth + 1).map((i) => i + opts.minDepth)) {
-    const cf = new CfEngine(board, searchInfo, tt, useIterativeBestMove && depth > opts.minDepth)
+  for (const depth of range(settings.maxDepth - settings.minDepth + 1).map((i) => i + settings.minDepth)) {
+    const cf = new CfEngine(board, searchInfo, tt, useIterativeBestMove && depth > settings.minDepth)
     searchInfo.depth = depth
     searchInfo.score = cf.negamax(columns, depth, -MAXVAL, MAXVAL, true)
     const timedOut = timeOut()
-    opts.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], timedOut })
+    settings.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], timedOut })
     if (searchInfo.score || timedOut) break
   }
   return { ...searchInfo, elapsedTime: t.elapsedTime() }

@@ -1,0 +1,14 @@
+{
+  "name": "vier-gewinnt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "analyze": "node run.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}
