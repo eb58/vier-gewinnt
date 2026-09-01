@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 import { Board, findBestMove } from '../engines/cf-engine.js'
 
 describe('BOARD', () => {
@@ -18,6 +18,38 @@ describe('BOARD', () => {
     expect(board.getHeightOfCol(0)).toBe(3)
     expect(board.opponentPlayer()).toBe(1)
     expect(new Board('111111222222333333444444555555666666777777').isDraw()).toBe(true)
+  })
+})
+
+describe('SEARCH TIMEOUT', () => {
+  test('aborts without changing the board', () => {
+    const board = new Board('1234567')
+    const snapshot = JSON.stringify({
+      bitboards: board.bitboards.map((bits) => [...bits]),
+      cntMoves: board.cntMoves,
+      currentPlayer: board.currentPlayer,
+      hash: board.hash,
+      heightCols: [...board.heightCols]
+    })
+    const result = (() => {
+      const clock = { now: 0 }
+      const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => clock.now++)
+      try {
+        return findBestMove(board, { maxDepth: 42, maxThinkingTime: 2 })
+      } finally {
+        dateNow.mockRestore()
+      }
+    })()
+
+    expect(result).toMatchObject({ depth: 0, score: 0, timedOut: true })
+    expect(result.bestMove).toBeUndefined()
+    expect(JSON.stringify({
+      bitboards: board.bitboards.map((bits) => [...bits]),
+      cntMoves: board.cntMoves,
+      currentPlayer: board.currentPlayer,
+      hash: board.hash,
+      heightCols: [...board.heightCols]
+    })).toBe(snapshot)
   })
 })
 

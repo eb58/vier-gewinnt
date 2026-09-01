@@ -5,6 +5,8 @@ const MAXVAL = 100
 export const COLS = 7
 export const ROWS = 6
 const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+const SEARCH_ABORTED = Symbol('search-aborted')
+const TIME_CHECK_MASK = 1023
 
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
@@ -156,14 +158,17 @@ const orderedColumns = (board, columns, ttMove) => {
 }
 
 class CfEngine {
-  constructor(board, searchInfo, tt, useBestMove) {
+  constructor(board, searchInfo, tt, useBestMove, timeOut) {
     this.tt = tt
     this.board = board
     this.searchInfo = searchInfo
     this.useBestMove = useBestMove
+    this.timeOut = timeOut
   }
 
   negamax = (columns, depth, alpha, beta, root = false) => {
+    if ((this.searchInfo.nodes & TIME_CHECK_MASK) === 0 && this.timeOut()) return SEARCH_ABORTED
+
     const hash = this.board.hash
     const cachedScore = this.tt.getScore(hash, depth, alpha, beta)
     if (cachedScore !== null) return cachedScore
@@ -184,8 +189,11 @@ class CfEngine {
     for (const c of searchColumns) {
       if (this.board.heightCols[c] >= ROWS) continue
       this.board.doMove(c)
-      const score = -this.negamax(columns, depth - 1, -beta, -node.alpha)
+      const childScore = this.negamax(columns, depth - 1, -beta, -node.alpha)
       this.board.undoMove(c)
+      if (childScore === SEARCH_ABORTED) return SEARCH_ABORTED
+
+      const score = -childScore
       if (node.bestMove === undefined) {
         node.bestMove = c
         if (root) this.searchInfo.bestMove = c
@@ -211,12 +219,32 @@ export const findBestMove = (board, opts) => {
   const columns = CENTER_ORDER.filter((c) => board.heightCols[c] < ROWS)
   const useIterativeBestMove = settings.maxDepth > settings.minDepth
   const tt = new TranspositionTable(settings.maxDepth, useIterativeBestMove)
+  const completed = { depth: 0, score: 0, bestMove: undefined }
 
   for (const depth of range(settings.maxDepth - settings.minDepth + 1).map((i) => i + settings.minDepth)) {
-    const cf = new CfEngine(board, searchInfo, tt, useIterativeBestMove && depth > settings.minDepth)
+    if (timeOut()) {
+      searchInfo.timedOut = true
+      break
+    }
+
+    const cf = new CfEngine(board, searchInfo, tt, useIterativeBestMove && depth > settings.minDepth, timeOut)
     searchInfo.depth = depth
-    searchInfo.score = cf.negamax(columns, depth, -MAXVAL, MAXVAL, true)
+    const score = cf.negamax(columns, depth, -MAXVAL, MAXVAL, true)
+    if (score === SEARCH_ABORTED) {
+      searchInfo.depth = completed.depth
+      searchInfo.score = completed.score
+      searchInfo.bestMove = completed.bestMove
+      searchInfo.timedOut = true
+      settings.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], attemptedDepth: depth })
+      break
+    }
+
+    searchInfo.score = score
     const timedOut = timeOut()
+    searchInfo.timedOut = timedOut
+    completed.depth = depth
+    completed.score = score
+    completed.bestMove = searchInfo.bestMove
     settings.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], timedOut })
     if (searchInfo.score || timedOut) break
   }
