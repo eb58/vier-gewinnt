@@ -48,6 +48,27 @@ const add49 = (aLo, aHi, bLo, bHi) => {
   outHi = (aHi + bHi + (sum > 0xffffffff ? 1 : 0)) & HI_MASK
 }
 
+// Spiegelt das Brett links-rechts: Spalte c wandert nach COLS-1-c, die Zeile bleibt.
+// Im 49-Bit-Layout ist das ein Vertauschen ganzer 7-Bit-Bloecke.
+const mirror49 = (lo, hi) => {
+  let rLo = 0
+  let rHi = 0
+  for (let c = 0; c < COLS; c++) {
+    const b = c * H1
+    // shrLo taugt nur fuer Weiten unter 32 - JS rechnet Schiebeweiten modulo 32.
+    const v = (b === 0 ? lo : b < 32 ? shrLo(lo, hi, b) : hi >>> (b - 32)) & 0x7f
+    if (v === 0) continue
+    const t = (COLS - 1 - c) * H1
+    if (t >= 32) rHi |= v << (t - 32)
+    else {
+      rLo |= v << t
+      if (t > 25) rHi |= v >>> (32 - t) // Block laeuft ueber die Wortgrenze
+    }
+  }
+  outLo = rLo
+  outHi = rHi
+}
+
 // Alle Felder, auf denen `p` mit einem weiteren Stein vier in einer Reihe haette - auch
 // solche, die noch nicht spielbar sind. Das ist der Kern: eine Berechnung statt sieben
 // Spaltenpruefungen, und sie liefert die ganze Drohungsmenge statt nur der ersten.
@@ -152,6 +173,27 @@ export class Board {
   key = () => {
     add49(this.curLo, this.curHi, this.maskLo, this.maskHi)
     add49(outLo, outHi, BOTTOM_LO, BOTTOM_HI)
+  }
+
+  // Stellung und Spiegelbild haben denselben Wert, teilen sich hier also einen TT-Eintrag.
+  // Kanonisch ist der kleinere der beiden Schluessel; der Rueckgabewert sagt, ob gespiegelt
+  // wurde - dann gehoert auch der gespeicherte beste Zug zur gespiegelten Orientierung.
+  canonicalKey = () => {
+    this.key()
+    const kLo = outLo
+    const kHi = outHi
+    mirror49(this.curLo, this.curHi)
+    const curLo = outLo
+    const curHi = outHi
+    mirror49(this.maskLo, this.maskHi)
+    add49(curLo, curHi, outLo, outHi)
+    add49(outLo, outHi, BOTTOM_LO, BOTTOM_HI)
+    const hi = outHi >>> 0
+    const khi = kHi >>> 0
+    if (hi < khi || (hi === khi && (outLo >>> 0) < (kLo >>> 0))) return true
+    outLo = kLo
+    outHi = kHi
+    return false
   }
 
   toString = () => {
@@ -316,7 +358,7 @@ class Solver {
       if (alpha >= beta) return alpha
     }
 
-    board.key()
+    const mirrored = board.canonicalKey()
     const kLo = outLo
     const kHi = outHi
     const cached = this.tt.probe(kLo, kHi, alpha, beta)
@@ -326,7 +368,8 @@ class Solver {
     const cols = this.cols[ply]
     const bitsLo = this.bitsLo[ply]
     const bitsHi = this.bitsHi[ply]
-    const ttMove = this.tt.getBestMove(kLo, kHi)
+    const stored = this.tt.getBestMove(kLo, kHi)
+    const ttMove = stored < 0 || !mirrored ? stored : COLS - 1 - stored
     let bestMove = cols[0]
 
     for (let i = -1; i < n; i++) {
@@ -345,14 +388,14 @@ class Solver {
       if (childScore === SEARCH_ABORTED) return SEARCH_ABORTED
 
       const score = -childScore
-      if (score >= beta) return this.tt.store(kLo, kHi, score, TT_FLAGS.lower_bound, c)
+      if (score >= beta) return this.tt.store(kLo, kHi, score, TT_FLAGS.lower_bound, mirrored ? COLS - 1 - c : c)
       if (score > alpha) {
         alpha = score
         bestMove = c
       }
     }
 
-    return this.tt.store(kLo, kHi, alpha, alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound, bestMove)
+    return this.tt.store(kLo, kHi, alpha, alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound, mirrored ? COLS - 1 - bestMove : bestMove)
   }
 }
 
