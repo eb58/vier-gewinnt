@@ -1,7 +1,9 @@
 const range = (n) => [...Array(n).keys()]
 const timer = (start = performance.now()) => ({ elapsedTime: () => ((performance.now() - start) / 1000).toFixed(3) })
 
-const MAXVAL = 100
+// Weit oberhalb jeder Stellungsbewertung, damit ein bewiesenes Ergebnis nie mit einem
+// Schätzwert verwechselt werden kann. |score| === MAXVAL heisst "bewiesen".
+export const MAXVAL = 10000
 export const COLS = 7
 export const ROWS = 6
 const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
@@ -27,13 +29,30 @@ const WIN_START = Uint16Array.from(restLines.reduce((acc, lines) => [...acc, acc
 const WIN_LO = Int32Array.from(restLines.flat(), (rest) => rest.reduce((m, i) => i < 32 ? m | (1 << i) : m, 0))
 const WIN_HI = Int32Array.from(restLines.flat(), (rest) => rest.reduce((m, i) => i < 32 ? m : m | (1 << (i - 32)), 0))
 
+// Zweiter Index über dieselben Linien, diesmal Zelle -> Linien-IDs. Damit lässt sich die
+// Bewertung inkrementell führen: ein Stein berührt nur die Linien durch seine Zelle (max 13),
+// statt bei jeder Blattbewertung alle 69 neu zu zählen.
+const NUM_LINES = WIN_LINES.length
+const cellLines = range(COLS * ROWS).map((idx) => range(NUM_LINES).filter((line) => WIN_LINES[line].includes(idx)))
+const CELL_LINE_START = Uint16Array.from(cellLines.reduce((acc, lines) => [...acc, acc[acc.length - 1] + lines.length], [0]))
+const CELL_LINES = Uint8Array.from(cellLines.flat())
+
+// Wert einer Linie nach Besetzung: gemischte Linien sind tot, sonst wächst der Wert steil
+// mit der Anzahl eigener Steine. Indiziert mit anzahlSpieler0 * 5 + anzahlSpieler1.
+const LINE_WEIGHTS = [0, 1, 4, 16, 64]
+const LINE_VALUE = Int16Array.from(range(25), (i) => {
+  const a = (i / 5) | 0
+  const b = i % 5
+  return a && b ? 0 : a ? LINE_WEIGHTS[a] : -LINE_WEIGHTS[b]
+})
+
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
 class TranspositionTable {
   constructor(bits) {
     this.mask = (1 << bits) - 1
     this.keys = new Uint32Array(this.mask + 1)
-    this.scores = new Int8Array(this.mask + 1)
+    this.scores = new Int16Array(this.mask + 1) // Int8 reicht seit der Bewertung nicht mehr
     this.depths = new Int8Array(this.mask + 1)
     this.flags = new Int8Array(this.mask + 1)
     this.bestMoves = new Uint8Array(this.mask + 1)
@@ -115,6 +134,8 @@ export class Board {
     this.bitboards = [new Uint32Array(2), new Uint32Array(2)]
     this.hash = player ? SIDE_KEY : 0
     this.lock = player ? SIDE_LOCK : 0
+    this.lineCounts = new Uint8Array(2 * NUM_LINES)
+    this.evalScore = 0 // immer aus Sicht von Spieler 0
   }
 
   constructor(FEN = '') {
@@ -128,6 +149,7 @@ export class Board {
     const keyIdx = this.currentPlayer ? idx : idx + 42
     this.hash ^= pieceKeys[keyIdx] ^ SIDE_KEY
     this.lock ^= lockKeys[keyIdx] ^ SIDE_LOCK
+    this.updateLines(idx, this.currentPlayer, 1)
     this.bitboards[this.currentPlayer][idx < 32 ? 0 : 1] |= 1 << (idx < 32 ? idx : idx - 32)
     this.cntMoves++
     this.currentPlayer = 1 - this.currentPlayer
@@ -142,8 +164,27 @@ export class Board {
     const keyIdx = this.currentPlayer ? idx : idx + 42
     this.hash ^= pieceKeys[keyIdx] ^ SIDE_KEY
     this.lock ^= lockKeys[keyIdx] ^ SIDE_LOCK
+    this.updateLines(idx, this.currentPlayer, -1)
     this.bitboards[this.currentPlayer][idx < 32 ? 0 : 1] &= ~(1 << (idx < 32 ? idx : idx - 32))
   }
+
+  // Nur die Linien durch idx ändern sich. Für jede wird ihr alter Wert abgezogen und der
+  // neue addiert, damit evalScore ohne Vollzählung mitläuft. delta ist +1 beim Setzen,
+  // -1 beim Zurücknehmen, was die Änderung exakt umkehrt.
+  updateLines = (idx, player, delta) => {
+    const counts = this.lineCounts
+    const base = player * NUM_LINES
+    for (let i = CELL_LINE_START[idx], end = CELL_LINE_START[idx + 1]; i < end; i++) {
+      const line = CELL_LINES[i]
+      this.evalScore -= LINE_VALUE[counts[line] * 5 + counts[NUM_LINES + line]]
+      counts[base + line] += delta
+      this.evalScore += LINE_VALUE[counts[line] * 5 + counts[NUM_LINES + line]]
+    }
+  }
+
+  // Aus Sicht des Spielers am Zug. Die Fallunterscheidung hält 0 bei 0 statt bei -0,
+  // was sonst Math.sign und Object.is-Vergleiche stolpern lässt.
+  evaluation = () => this.currentPlayer && this.evalScore ? -this.evalScore : this.evalScore
 
   checkWinForColumn = (c) => this.checkWinning(c, this.currentPlayer)
   getHeightOfCol = (c) => this.heightCols[c]
@@ -228,7 +269,8 @@ class CfEngine {
       }
     }
 
-    if (depth === 0 || this.board.cntMoves === COLS * ROWS) return 0
+    if (this.board.cntMoves === COLS * ROWS) return 0
+    if (depth === 0) return this.board.evaluation()
 
     ++this.searchInfo.nodes
 
@@ -315,7 +357,9 @@ export const findBestMove = (board, opts) => {
     completed.score = score
     completed.bestMove = searchInfo.bestMove
     settings.onDepth?.({ ...searchInfo, elapsedTime: t.elapsedTime(), columns: [...columns], timedOut })
-    if (searchInfo.score || timedOut) break
+    // Nur ein bewiesenes Ergebnis beendet die Vertiefung. Vor der Bewertung war jeder Wert
+    // ungleich 0 gleichbedeutend damit; jetzt sind die meisten Werte blosse Schätzungen.
+    if (Math.abs(searchInfo.score) === MAXVAL || timedOut) break
   }
   return { ...searchInfo, elapsedTime: t.elapsedTime() }
 }

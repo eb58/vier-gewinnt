@@ -1,4 +1,4 @@
-import { Board, COLS, ROWS, findBestMove } from './engines/cf-engine.js'
+import { Board, COLS, MAXVAL, ROWS, findBestMove } from './engines/cf-engine.js'
 import { createEngineWorkerClient } from './engine-worker-client.js'
 
 const $ = (selector) => document.querySelector(selector)
@@ -181,10 +181,14 @@ const formatThinkingTime = (time) => time === undefined ? '-' : `${time}s`
 const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
 const playerName = (player) => player === AI ? 'KI' : 'Mensch'
 const currentPlayerFromSnapshot = (snapshot) => snapshot.moves.length % 2 ? 1 - snapshot.startPlayer : snapshot.startPlayer
+// Nur |score| === MAXVAL ist ein bewiesenes Ergebnis. Alles dazwischen ist die
+// Stellungsbewertung und darf nicht als Gewinn oder Verlust ausgegeben werden.
 const scoreMeaning = (score, player, depth) => {
   const depthText = Number.isInteger(depth) ? `bis Tiefe ${depth}` : 'innerhalb der Suchtiefe'
-  if (score > 0) return `Gewinnstellung fuer ${playerName(player)} ${depthText}`
-  if (score < 0) return `Verluststellung fuer ${playerName(player)} ${depthText}`
+  if (score === MAXVAL) return `Gewinnstellung fuer ${playerName(player)} ${depthText}`
+  if (score === -MAXVAL) return `Verluststellung fuer ${playerName(player)} ${depthText}`
+  if (score > 0) return `leichter Vorteil fuer ${playerName(player)} (Schaetzwert ${score})`
+  if (score < 0) return `leichter Nachteil fuer ${playerName(player)} (Schaetzwert ${score})`
   return ''
 }
 
