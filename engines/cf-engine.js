@@ -206,7 +206,12 @@ class CfEngine {
     this.timeOut = timeOut
   }
 
-  negamax = (columns, depth, alpha, beta, root = false) => {
+  // lastMove ist die Spalte, mit der dieser Knoten betreten wurde. Der Elternknoten hat
+  // dort bereits die vollständige Sofortgewinn-Menge des jetzt Ziehenden bestimmt und
+  // rekursiert nur, wenn sie leer war oder aus genau lastMove bestand. Seither haben sich
+  // nur heightCols[lastMove] und die Steine des Gegners geändert - letztere können dem
+  // jetzt Ziehenden keinen Gewinn verschaffen. Also genügt hier diese eine Spalte.
+  negamax = (columns, depth, alpha, beta, root = false, lastMove = -1) => {
     if ((this.searchInfo.nodes & TIME_CHECK_MASK) === 0 && this.timeOut()) return SEARCH_ABORTED
 
     const hash = this.board.hash
@@ -228,17 +233,23 @@ class CfEngine {
     ++this.searchInfo.nodes
 
     const originalAlpha = alpha
-    const winningMove = this.board.findWinningColumnForCurrentPlayer(columns)
+    const winningMove = root
+      ? this.board.findWinningColumnForCurrentPlayer(columns)
+      : this.board.checkWinning(lastMove, this.board.currentPlayer) ? lastMove : null
     if (Number.isInteger(winningMove)) {
       if (root) this.searchInfo.bestMove = winningMove
       return this.tt.store(hash, lock, depth, MAXVAL, TT_FLAGS.exact, winningMove)
     }
 
-    // An der Wurzel ausgelassen, damit dort immer ein echter bestMove aus der Zugschleife kommt.
-    const threat = root ? NO_THREAT : this.board.findSingleWinningColumn(columns, this.board.opponentPlayer())
+    const threat = this.board.findSingleWinningColumn(columns, this.board.opponentPlayer())
     // Zwei Drohungen lassen sich nicht beide blocken, und einen eigenen Sofortgewinn
-    // hätte der Zweig darüber schon gefunden - die Stellung ist verloren.
-    if (threat === MULTI_THREAT) return this.tt.store(hash, lock, depth, -MAXVAL, TT_FLAGS.exact)
+    // hätte der Zweig darüber schon gefunden - die Stellung ist verloren. An der Wurzel
+    // kostet das Nachschlagen der Blockspalte einen Scan, liefert aber einen bestMove.
+    if (threat === MULTI_THREAT) {
+      const block = root ? this.board.findWinningColumnForOpponentPlayer(columns) : -1
+      if (root) this.searchInfo.bestMove = block
+      return this.tt.store(hash, lock, depth, -MAXVAL, TT_FLAGS.exact, block)
+    }
 
     let bestMove = -1
     const ttMove = this.useBestMove ? this.tt.getBestMove(hash, lock) : null
@@ -247,7 +258,7 @@ class CfEngine {
     for (const c of searchColumns) {
       if (this.board.heightCols[c] >= ROWS) continue
       this.board.doMove(c)
-      const childScore = this.negamax(columns, depth - 1, -beta, -alpha)
+      const childScore = this.negamax(columns, depth - 1, -beta, -alpha, false, c)
       this.board.undoMove(c)
       if (childScore === SEARCH_ABORTED) return SEARCH_ABORTED
 
