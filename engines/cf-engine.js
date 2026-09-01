@@ -6,6 +6,9 @@ export const COLS = 7
 export const ROWS = 6
 const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
 const TT_MOVE_ORDERS = range(COLS).map((move) => [move, ...CENTER_ORDER.filter((col) => col !== move)])
+const SINGLE_COLUMNS = range(COLS).map((col) => [col]) // vorab, damit ein erzwungener Zug keine Allokation pro Knoten kostet
+const NO_THREAT = -1
+const MULTI_THREAT = -2
 const SEARCH_ABORTED = Symbol('search-aborted')
 const TIME_CHECK_MASK = 1023
 
@@ -172,6 +175,18 @@ export class Board {
   findWinningColumnForCurrentPlayer = (columns) => this.findWinningColumn(columns, this.currentPlayer)
   findWinningColumnForOpponentPlayer = (columns) => this.findWinningColumn(columns, 1 - this.currentPlayer)
 
+  // NO_THREAT, MULTI_THREAT oder die einzige Spalte, in der `player` sofort gewinnt.
+  // Anders als findWinningColumn muss hier bis zum Ende gezählt werden.
+  findSingleWinningColumn = (columns, player) => {
+    let found = NO_THREAT
+    for (const c of columns) {
+      if (this.heightCols[c] >= ROWS || !this.checkWinning(c, player)) continue
+      if (found !== NO_THREAT) return MULTI_THREAT
+      found = c
+    }
+    return found
+  }
+
   toString = () => {
     const bb = this.bitboards
     const has = (player, idx) => (idx < 32 ? bb[player][0] & (1 << idx) : bb[player][1] & (1 << (idx - 32)))
@@ -219,9 +234,16 @@ class CfEngine {
       return this.tt.store(hash, lock, depth, MAXVAL, TT_FLAGS.exact, winningMove)
     }
 
+    // An der Wurzel ausgelassen, damit dort immer ein echter bestMove aus der Zugschleife kommt.
+    const threat = root ? NO_THREAT : this.board.findSingleWinningColumn(columns, this.board.opponentPlayer())
+    // Zwei Drohungen lassen sich nicht beide blocken, und einen eigenen Sofortgewinn
+    // hätte der Zweig darüber schon gefunden - die Stellung ist verloren.
+    if (threat === MULTI_THREAT) return this.tt.store(hash, lock, depth, -MAXVAL, TT_FLAGS.exact)
+
     let bestMove = -1
     const ttMove = this.useBestMove ? this.tt.getBestMove(hash, lock) : null
-    const searchColumns = Number.isInteger(ttMove) ? TT_MOVE_ORDERS[ttMove] : columns
+    // Bei genau einer Drohung verliert jeder Zug ausser dem Block sofort.
+    const searchColumns = threat !== NO_THREAT ? SINGLE_COLUMNS[threat] : Number.isInteger(ttMove) ? TT_MOVE_ORDERS[ttMove] : columns
     for (const c of searchColumns) {
       if (this.board.heightCols[c] >= ROWS) continue
       this.board.doMove(c)
