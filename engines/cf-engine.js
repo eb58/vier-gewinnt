@@ -5,8 +5,10 @@ const MAXVAL = 100
 export const COLS = 7
 export const ROWS = 6
 const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+const TT_MOVE_ORDERS = range(COLS).map((move) => [move, ...CENTER_ORDER.filter((col) => col !== move)])
 const SEARCH_ABORTED = Symbol('search-aborted')
 const TIME_CHECK_MASK = 1023
+const hasBit = (lo, hi, idx) => idx < 32 ? lo & (1 << idx) : hi & (1 << (idx - 32))
 
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
@@ -19,8 +21,7 @@ class TranspositionTable {
     this.scores = new Int8Array(this.mask + 1)
     this.depths = new Int8Array(this.mask + 1)
     this.flags = new Int8Array(this.mask + 1)
-    this.bestMoves = trackBestMoves ? new Int8Array(this.mask + 1) : null
-    this.bestMoves?.fill(-1)
+    this.bestMoves = trackBestMoves ? new Uint8Array(this.mask + 1) : null
   }
 
   index = (hash) => hash & this.mask
@@ -32,7 +33,7 @@ class TranspositionTable {
     this.depths[idx] = depth
     this.scores[idx] = normalizedScore
     this.flags[idx] = flag
-    if (this.bestMoves) this.bestMoves[idx] = Number.isInteger(bestMove) ? bestMove : -1
+    if (this.bestMoves) this.bestMoves[idx] = Number.isInteger(bestMove) && bestMove >= 0 ? bestMove + 1 : 0
     return normalizedScore
   }
 
@@ -51,7 +52,7 @@ class TranspositionTable {
   getBestMove(hash) {
     if (!this.bestMoves) return null
     const idx = this.index(hash)
-    return this.keys[idx] === hash && this.bestMoves[idx] >= 0 ? this.bestMoves[idx] : null
+    return this.keys[idx] === hash && this.bestMoves[idx] > 0 ? this.bestMoves[idx] - 1 : null
   }
 }
 
@@ -112,21 +113,20 @@ export class Board {
     const bb = this.bitboards[player]
     const bbLo = bb[0]
     const bbHi = bb[1]
-    const has = (idx) => (idx < 32 ? bbLo & (1 << idx) : bbHi & (1 << (idx - 32)))
 
-    for (let count = 1, r = row - 1; r >= 0 && has(r * COLS + col); r--) if (++count >= 4) return true
+    for (let count = 1, r = row - 1; r >= 0 && hasBit(bbLo, bbHi, r * COLS + col); r--) if (++count >= 4) return true
 
     let count = 1
-    for (let c = col - 1; c >= 0 && has(row * COLS + c); c--) if (++count >= 4) return true
-    for (let c = col + 1; c < COLS && has(row * COLS + c); c++) if (++count >= 4) return true
+    for (let c = col - 1; c >= 0 && hasBit(bbLo, bbHi, row * COLS + c); c--) if (++count >= 4) return true
+    for (let c = col + 1; c < COLS && hasBit(bbLo, bbHi, row * COLS + c); c++) if (++count >= 4) return true
 
     count = 1
-    for (let r = row - 1, c = col - 1; c >= 0 && r >= 0 && has(r * COLS + c); r--, c--) if (++count >= 4) return true
-    for (let r = row + 1, c = col + 1; c < COLS && r < ROWS && has(r * COLS + c); r++, c++) if (++count >= 4) return true
+    for (let r = row - 1, c = col - 1; c >= 0 && r >= 0 && hasBit(bbLo, bbHi, r * COLS + c); r--, c--) if (++count >= 4) return true
+    for (let r = row + 1, c = col + 1; c < COLS && r < ROWS && hasBit(bbLo, bbHi, r * COLS + c); r++, c++) if (++count >= 4) return true
 
     count = 1
-    for (let r = row - 1, c = col + 1; c < COLS && r >= 0 && has(r * COLS + c); r--, c++) if (++count >= 4) return true
-    for (let r = row + 1, c = col - 1; c >= 0 && r < ROWS && has(r * COLS + c); r++, c--) if (++count >= 4) return true
+    for (let r = row - 1, c = col + 1; c < COLS && r >= 0 && hasBit(bbLo, bbHi, r * COLS + c); r--, c++) if (++count >= 4) return true
+    for (let r = row + 1, c = col - 1; c >= 0 && r < ROWS && hasBit(bbLo, bbHi, r * COLS + c); r++, c--) if (++count >= 4) return true
 
     return false
   }
@@ -147,14 +147,6 @@ export class Board {
   }
 
   print = () => console.log('FEN:', this.FEN, '\n', this.toString().trim())
-}
-
-const orderedColumns = (board, columns, ttMove) => {
-  const moves = []
-  if (Number.isInteger(ttMove) && board.heightCols[ttMove] < ROWS) moves.push(ttMove)
-  for (const c of columns)
-    if (board.heightCols[c] < ROWS && c !== ttMove) moves.push(c)
-  return moves
 }
 
 class CfEngine {
@@ -184,30 +176,31 @@ class CfEngine {
       return this.tt.store(hash, depth, MAXVAL, TT_FLAGS.exact, winningMove)
     }
 
-    const node = { alpha, bestMove: undefined }
-    const searchColumns = this.useBestMove ? orderedColumns(this.board, columns, this.tt.getBestMove(hash)) : columns
+    let bestMove = -1
+    const ttMove = this.useBestMove ? this.tt.getBestMove(hash) : null
+    const searchColumns = Number.isInteger(ttMove) ? TT_MOVE_ORDERS[ttMove] : columns
     for (const c of searchColumns) {
       if (this.board.heightCols[c] >= ROWS) continue
       this.board.doMove(c)
-      const childScore = this.negamax(columns, depth - 1, -beta, -node.alpha)
+      const childScore = this.negamax(columns, depth - 1, -beta, -alpha)
       this.board.undoMove(c)
       if (childScore === SEARCH_ABORTED) return SEARCH_ABORTED
 
       const score = -childScore
-      if (node.bestMove === undefined) {
-        node.bestMove = c
+      if (bestMove < 0) {
+        bestMove = c
         if (root) this.searchInfo.bestMove = c
       }
-      if (score > node.alpha) {
-        node.alpha = score
-        node.bestMove = c
+      if (score > alpha) {
+        alpha = score
+        bestMove = c
         if (root) this.searchInfo.bestMove = c
       }
-      if (node.alpha >= beta) return this.tt.store(hash, depth, node.alpha, TT_FLAGS.lower_bound, c)
+      if (alpha >= beta) return this.tt.store(hash, depth, alpha, TT_FLAGS.lower_bound, c)
     }
 
-    const flag = node.alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound
-    return this.tt.store(hash, depth, node.alpha, flag, node.bestMove)
+    const flag = alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound
+    return this.tt.store(hash, depth, alpha, flag, bestMove)
   }
 }
 
