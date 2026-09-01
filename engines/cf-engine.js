@@ -8,7 +8,21 @@ const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
 const TT_MOVE_ORDERS = range(COLS).map((move) => [move, ...CENTER_ORDER.filter((col) => col !== move)])
 const SEARCH_ABORTED = Symbol('search-aborted')
 const TIME_CHECK_MASK = 1023
-const hasBit = (lo, hi, idx) => idx < 32 ? lo & (1 << idx) : hi & (1 << (idx - 32))
+
+// Die 69 Viererlinien, je Zelle indiziert (CSR-Layout). Gespeichert wird pro Linie nur die
+// Maske der ANDEREN drei Zellen - die fallende Zelle steckt per Konstruktion in jeder Linie
+// durch sie, die Prüfung ist damit ein blosses (bb & maske) === maske.
+// Int32Array, nicht Uint32Array: Bit 31 muss als negativer int32 zurückkommen, sonst
+// scheitert der Vergleich gegen das int32-Ergebnis von `&`.
+const inBoard = ([r, c]) => r >= 0 && r < ROWS && c >= 0 && c < COLS
+const WIN_LINES = range(ROWS).flatMap((r) => range(COLS).flatMap((c) => [[0, 1], [1, 0], [1, 1], [1, -1]]
+  .map((d) => range(4).map((k) => [r + k * d[0], c + k * d[1]]))
+  .filter((cells) => cells.every(inBoard))
+  .map((cells) => cells.map(([rr, cc]) => rr * COLS + cc))))
+const restLines = range(COLS * ROWS).map((idx) => WIN_LINES.filter((line) => line.includes(idx)).map((line) => line.filter((i) => i !== idx)))
+const WIN_START = Uint16Array.from(restLines.reduce((acc, lines) => [...acc, acc[acc.length - 1] + lines.length], [0]))
+const WIN_LO = Int32Array.from(restLines.flat(), (rest) => rest.reduce((m, i) => i < 32 ? m | (1 << i) : m, 0))
+const WIN_HI = Int32Array.from(restLines.flat(), (rest) => rest.reduce((m, i) => i < 32 ? m : m | (1 << (i - 32)), 0))
 
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
@@ -140,21 +154,13 @@ export class Board {
     const bb = this.bitboards[player]
     const bbLo = bb[0]
     const bbHi = bb[1]
+    const idx = row * COLS + col
 
-    for (let count = 1, r = row - 1; r >= 0 && hasBit(bbLo, bbHi, r * COLS + col); r--) if (++count >= 4) return true
-
-    let count = 1
-    for (let c = col - 1; c >= 0 && hasBit(bbLo, bbHi, row * COLS + c); c--) if (++count >= 4) return true
-    for (let c = col + 1; c < COLS && hasBit(bbLo, bbHi, row * COLS + c); c++) if (++count >= 4) return true
-
-    count = 1
-    for (let r = row - 1, c = col - 1; c >= 0 && r >= 0 && hasBit(bbLo, bbHi, r * COLS + c); r--, c--) if (++count >= 4) return true
-    for (let r = row + 1, c = col + 1; c < COLS && r < ROWS && hasBit(bbLo, bbHi, r * COLS + c); r++, c++) if (++count >= 4) return true
-
-    count = 1
-    for (let r = row - 1, c = col + 1; c < COLS && r >= 0 && hasBit(bbLo, bbHi, r * COLS + c); r--, c++) if (++count >= 4) return true
-    for (let r = row + 1, c = col - 1; c >= 0 && r < ROWS && hasBit(bbLo, bbHi, r * COLS + c); r++, c--) if (++count >= 4) return true
-
+    for (let i = WIN_START[idx], end = WIN_START[idx + 1]; i < end; i++) {
+      const lo = WIN_LO[i]
+      const hi = WIN_HI[i]
+      if ((bbLo & lo) === lo && (bbHi & hi) === hi) return true
+    }
     return false
   }
 
