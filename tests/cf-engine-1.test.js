@@ -1,5 +1,16 @@
 import { describe, expect, test, vi } from 'vitest'
-import { Board, findBestMove } from '../engines/cf-engine.js'
+import { Board, COLS, ROWS, findBestMove, resetTranspositionTables } from '../engines/cf-engine.js'
+
+const range = (n) => [...Array(n).keys()]
+const COLUMNS = [3, 2, 4, 1, 5, 0, 6]
+const snapshot = (board) => ({
+  bitboards: board.bitboards.map((bits) => [...bits]),
+  cntMoves: board.cntMoves,
+  currentPlayer: board.currentPlayer,
+  hash: board.hash,
+  heightCols: [...board.heightCols],
+  lock: board.lock
+})
 
 describe('BOARD', () => {
   test('for debug ', () => {
@@ -24,13 +35,7 @@ describe('BOARD', () => {
 describe('SEARCH TIMEOUT', () => {
   test('aborts without changing the board', () => {
     const board = new Board('1234567')
-    const snapshot = JSON.stringify({
-      bitboards: board.bitboards.map((bits) => [...bits]),
-      cntMoves: board.cntMoves,
-      currentPlayer: board.currentPlayer,
-      hash: board.hash,
-      heightCols: [...board.heightCols]
-    })
+    const before = snapshot(board)
     const result = (() => {
       const clock = { now: 0 }
       const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => clock.now++)
@@ -43,13 +48,127 @@ describe('SEARCH TIMEOUT', () => {
 
     expect(result).toMatchObject({ depth: 0, score: 0, timedOut: true })
     expect(result.bestMove).toBeUndefined()
-    expect(JSON.stringify({
-      bitboards: board.bitboards.map((bits) => [...bits]),
-      cntMoves: board.cntMoves,
-      currentPlayer: board.currentPlayer,
-      hash: board.hash,
-      heightCols: [...board.heightCols]
-    })).toBe(snapshot)
+    expect(snapshot(board)).toEqual(before)
+  })
+})
+
+describe('TACTICAL PRUNING', () => {
+  test('blocks the only immediate opposing win', () => {
+    resetTranspositionTables()
+    const board = new Board('3731713')
+
+    expect(board.findSingleWinningColumn(COLUMNS, board.opponentPlayer())).toBe(2)
+    expect(findBestMove(board, { minDepth: 2, maxDepth: 2, maxThinkingTime: 1000 })).toMatchObject({ bestMove: 2, score: 0 })
+  })
+
+  test('recognizes two immediate opposing threats as a forced loss', () => {
+    resetTranspositionTables()
+    const board = new Board('774265223123446545')
+
+    expect(board.findSingleWinningColumn(COLUMNS, board.opponentPlayer())).toBe(-2)
+    expect(findBestMove(board, { minDepth: 2, maxDepth: 2, maxThinkingTime: 1000 }).score).toBe(-100)
+  })
+
+  test('finds a move that creates two threats', () => {
+    resetTranspositionTables()
+    expect(findBestMove(new Board('77426522312344654'), { minDepth: 2, maxDepth: 2, maxThinkingTime: 1000 })).toMatchObject({ bestMove: 4, score: 100 })
+  })
+
+  test('takes an immediate win instead of blocking', () => {
+    resetTranspositionTables()
+    const board = new Board('46174626')
+
+    expect(board.findWinningColumnForCurrentPlayer(COLUMNS)).toBe(2)
+    expect(board.findSingleWinningColumn(COLUMNS, board.opponentPlayer())).toBe(5)
+    expect(findBestMove(board, { minDepth: 1, maxDepth: 1, maxThinkingTime: 1000 })).toMatchObject({ bestMove: 2, score: 100 })
+  })
+})
+
+describe('BOARD INVARIANTS', () => {
+  test('restores every state field after undoing a sequence', () => {
+    const board = new Board()
+    const before = snapshot(board)
+    const moves = [3, 2, 4, 1, 5, 0, 6, 3, 2, 4, 1, 5]
+
+    moves.forEach((col) => board.doMove(col))
+    moves.toReversed().forEach((col) => board.undoMove(col))
+
+    expect(snapshot(board)).toEqual(before)
+  })
+
+  test('separates identical boards with different players to move', () => {
+    const aiStarts = new Board()
+    const humanStarts = new Board()
+    humanStarts.init(humanStarts.Player.hp)
+
+    expect(humanStarts.bitboards).toEqual(aiStarts.bitboards)
+    expect(humanStarts.hash).not.toBe(aiStarts.hash)
+    expect(humanStarts.lock).not.toBe(aiStarts.lock)
+  })
+})
+
+describe('TRANSPOSITION TABLE', () => {
+  test('returns the same result with a cold and warm cache', () => {
+    resetTranspositionTables()
+    const options = { minDepth: 12, maxDepth: 12, maxThinkingTime: 5000 }
+    const cold = findBestMove(new Board('1234567'), options)
+    const warm = findBestMove(new Board('1234567'), options)
+
+    expect(warm).toMatchObject({ bestMove: cold.bestMove, depth: cold.depth, score: cold.score })
+    expect(warm.nodes).toBe(0)
+  })
+
+  test('does not reuse the empty-board entry for the other starting player', () => {
+    resetTranspositionTables()
+    const options = { minDepth: 6, maxDepth: 6, maxThinkingTime: 1000 }
+    const aiStarts = new Board()
+    const humanStarts = new Board()
+    humanStarts.init(humanStarts.Player.hp)
+
+    findBestMove(aiStarts, options)
+    expect(findBestMove(humanStarts, options).nodes).toBeGreaterThan(0)
+  })
+})
+
+const referenceSearch = (board, depth) => {
+  if (depth === 0 || board.isDraw()) return { moves: [], score: 0 }
+  const legal = COLUMNS.filter((col) => board.heightCols[col] < ROWS)
+  const winning = legal.filter((col) => board.checkWinForColumn(col))
+  if (winning.length) return { moves: winning, score: 100 }
+
+  const scored = legal.map((col) => {
+    board.doMove(col)
+    const score = -referenceSearch(board, depth - 1).score
+    board.undoMove(col)
+    return { col, score }
+  })
+  const score = Math.max(...scored.map((move) => move.score))
+  return { moves: scored.filter((move) => move.score === score).map((move) => move.col), score }
+}
+
+describe('DETERMINISTIC SEARCH FUZZ', () => {
+  test('matches a reference minimax on legal positions', () => {
+    resetTranspositionTables()
+    const random = { value: 0x5eed1234, next: () => (random.value = (1664525 * random.value + 1013904223) >>> 0) }
+
+    range(120).forEach(() => {
+      const board = new Board()
+      const targetMoves = 4 + random.next() % 14
+      range(targetMoves).some(() => {
+        const legal = COLUMNS.filter((col) => board.heightCols[col] < ROWS && !board.checkWinForColumn(col))
+        if (!legal.length) return true
+        board.doMove(legal[random.next() % legal.length])
+        return false
+      })
+
+      const before = snapshot(board)
+      const expected = referenceSearch(board, 4)
+      const actual = findBestMove(board, { minDepth: 4, maxDepth: 4, maxThinkingTime: 5000 })
+
+      expect(actual.score).toBe(expected.score)
+      expect(expected.moves).toContain(actual.bestMove)
+      expect(snapshot(board)).toEqual(before)
+    })
   })
 })
 
