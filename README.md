@@ -86,6 +86,7 @@ Die produktive Engine unter `engines/cf-engine.js` basiert auf dem Connect-Four-
 ├── index.html      # App-Struktur
 ├── styles.css      # Oberfläche und Layout
 ├── app.js          # UI-Logik und Engine-Anbindung
+├── engine-worker-client.js # Abbruch und Lebenszyklus der Worker-Suchen
 ├── engine-worker.js # Web Worker für KI-Suche
 ├── engines/
 │   └── cf-engine.js # Vier-Gewinnt-Engine

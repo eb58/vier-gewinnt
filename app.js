@@ -1,4 +1,5 @@
 import { Board, COLS, ROWS, findBestMove } from './engines/cf-engine.js'
+import { createEngineWorkerClient } from './engine-worker-client.js'
 
 const $ = (selector) => document.querySelector(selector)
 const $$ = (selector) => [...document.querySelectorAll(selector)]
@@ -20,7 +21,6 @@ const state = {
   hintCol: null,
   hintPending: false,
   engineInfo: null,
-  engineSeq: 0,
   workerFailed: false,
   aiRequest: 0,
   hintRequest: 0,
@@ -120,8 +120,11 @@ const setTurn = () => {
 const validColumn = (col) => Number.isInteger(col) && col >= 0 && col < COLS
 const moveOrder = [3, 2, 4, 1, 5, 0, 6]
 const workerSupported = typeof Worker !== 'undefined'
-const engineWorker = workerSupported ? new Worker(new URL('./engine-worker.js', import.meta.url), { type: 'module' }) : null
-const engineJobs = new Map()
+const engineWorker = workerSupported ? createEngineWorkerClient({
+  createWorker: () => new Worker(new URL('./engine-worker.js', import.meta.url), { type: 'module' }),
+  onFailure: () => { state.workerFailed = true }
+}) : null
+const cancelEngineSearches = (reason) => engineWorker?.cancel(reason)
 
 const boardFromSnapshot = ({ startPlayer, moves }) => {
   const board = new Board()
@@ -150,20 +153,9 @@ const runEngineOnMain = (opts, snapshot, onProgress = () => {}) => {
   return normalizeResult(board, findBestMove(board, { ...opts, onDepth: onProgress }))
 }
 
-const searchEngine = (opts, snapshot = boardSnapshot(), onProgress = () => {}) => new Promise((resolve, reject) => {
-  if (!engineWorker || state.workerFailed) {
-    try {
-      resolve({ ...runEngineOnMain(opts, snapshot, onProgress), worker: false })
-    } catch (error) {
-      reject(error)
-    }
-    return
-  }
-
-  const id = ++state.engineSeq
-  engineJobs.set(id, { resolve, reject, onProgress })
-  engineWorker.postMessage({ id, opts, snapshot })
-})
+const searchEngine = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => engineWorker && !state.workerFailed
+  ? { ...await engineWorker.search(opts, snapshot, onProgress), worker: true }
+  : { ...runEngineOnMain(opts, snapshot, onProgress), worker: false }
 
 const searchWithFallback = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => {
   try {
@@ -172,28 +164,6 @@ const searchWithFallback = async (opts, snapshot = boardSnapshot(), onProgress =
     if (state.workerFailed) return { ...runEngineOnMain(opts, snapshot, onProgress), worker: false }
     throw error
   }
-}
-
-if (engineWorker) {
-  engineWorker.addEventListener('message', ({ data }) => {
-    const job = engineJobs.get(data.id)
-    if (!job) return
-
-    if (data.type === 'progress') {
-      job.onProgress(data.info)
-      return
-    }
-
-    engineJobs.delete(data.id)
-    if (data.ok) job.resolve({ ...data.result, worker: true })
-    else job.reject(new Error(data.error || 'Engine-Fehler'))
-  })
-
-  engineWorker.addEventListener('error', (event) => {
-    state.workerFailed = true
-    engineJobs.forEach(({ reject }) => reject(new Error(event.message || 'Worker-Fehler')))
-    engineJobs.clear()
-  })
 }
 
 const columnFromPoint = (event) => {
@@ -389,7 +359,7 @@ const render = () => {
   els.undoMove.disabled = state.locked || state.gameOver || state.moves.length === 0
   els.hintMove.disabled = state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
   els.difficultyLabel.textContent = activeDifficulty().label
-  els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : engineWorker && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
+  els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : workerSupported && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
   els.lastAiMove.textContent = state.lastAiMove === null ? '-' : `Spalte ${state.lastAiMove + 1}`
   els.depthStat.textContent = state.engineInfo?.depth ?? '-'
   els.thinkingTimeStat.textContent = formatThinkingTime(state.engineInfo?.elapsedTime)
@@ -437,6 +407,7 @@ const playMove = (col) => {
   state.hintCol = null
   state.hintPending = false
   state.hintRequest++
+  cancelEngineSearches('Brettzustand geändert')
   playDropSound()
   render()
   return finishIfNeeded(col, player, didWin)
@@ -538,6 +509,7 @@ const undoMove = () => {
   state.hintPending = false
   state.aiRequest++
   state.hintRequest++
+  cancelEngineSearches('Zug zurückgenommen')
   state.winningCells = []
   const lastAiMove = lastAiMoveFromMoves(state.startPlayer, state.moves)
   state.lastAiCell = lastAiMove.cell
@@ -564,6 +536,7 @@ const newGame = () => {
   state.engineInfo = null
   state.aiRequest++
   state.hintRequest++
+  cancelEngineSearches('Neue Runde gestartet')
   state.winPulse = null
   setStatus(els.aiStarts.checked ? 'Die KI beginnt.' : 'Du beginnst.', 'Wähle eine Spalte.')
   render()
