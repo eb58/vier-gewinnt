@@ -38,6 +38,16 @@ const solverSet = (fileName, limit) => {
   }, 120000) // eigenes Limit: die Eroeffnungssaetze sind noch teuer
 }
 
+describe('SOLVER: Sofortgewinn an der Wurzel', () => {
+  // negamax setzt voraus, dass der Ziehende nicht sofort gewinnen kann. Pons' Testsaetze
+  // erfuellen das von aussen, deshalb deckt keiner von ihnen diesen Fall ab.
+  test('erkennt einen Gewinnzug in der Wurzelstellung', () => {
+    resetTranspositionTables()
+    expect(solve(new Board('112233'), { maxThinkingTime: 5000 }).score).toBe(18) // (43 - 6) / 2
+    expect(solve(new Board('4444443333335555'), { maxThinkingTime: 5000 }).solved).toBe(true)
+  })
+})
+
 describe('SOLVER: exakte Scores', () => {
   solverSet('Test_L3_R1', 1000) // Endspiel
   solverSet('Test_L2_R1', 1000) // Mittelspiel

@@ -1,3 +1,5 @@
+import { lookupBook } from './cf-book.js'
+
 export const COLS = 7
 export const ROWS = 6
 
@@ -264,6 +266,12 @@ const ttPool = new Map()
 const getTranspositionTable = (bits = 22) => ttPool.get(bits) ?? ttPool.set(bits, new TranspositionTable(bits)).get(bits)
 export const resetTranspositionTables = () => ttPool.clear()
 
+// Eroeffnungsbuch, optional. Ist eines gesetzt, endet die Suche bei book.ply Steinen mit
+// dem nachgeschlagenen exakten Score statt weiterzurechnen.
+let openingBook = null
+export const setBook = (book) => { openingBook = book }
+export const getBook = () => openingBook
+
 const SEARCH_ABORTED = Symbol('solver-aborted')
 const TIME_CHECK_MASK = 1023
 const CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
@@ -348,6 +356,12 @@ class Solver {
     const stones = board.cntMoves
     if (stones === AREA) return 0
 
+    if (openingBook !== null && stones === openingBook.ply) {
+      board.canonicalKey()
+      const booked = lookupBook(openingBook, outLo, outHi)
+      if (booked !== undefined) return booked
+    }
+
     const n = this.generate(ply)
     if (n < 0) return lossScore(stones)
     if (stones >= AREA - 2) return 0
@@ -404,6 +418,24 @@ class Solver {
   }
 }
 
+// Fuer den Buchgenerator: dieselbe Zugerzeugung wie in der Suche, damit das Buch genau die
+// Stellungen enthaelt, die die Suche auch erreicht. Kein zweiter Codepfad.
+// Der kanonische Schluessel liegt nach canonicalKey() in modulinternen Variablen; fuer den
+// Buchgenerator wird er hier herausgereicht.
+export const canonicalKeyOf = (board) => {
+  const mirrored = board.canonicalKey()
+  return { lo: outLo, hi: outHi, mirrored }
+}
+
+export const createMoveGenerator = () => {
+  const solver = new Solver(null, { nodes: 0 }, null, () => false)
+  return (board) => {
+    solver.board = board
+    const n = solver.generate(0)
+    return { n, cols: solver.cols[0], bitsLo: solver.bitsLo[0], bitsHi: solver.bitsHi[0] }
+  }
+}
+
 // Binaere Suche ueber den Score, jeder Schritt eine Suche mit leerem Fenster.
 export const solve = (board, opts = {}) => {
   const settings = { maxThinkingTime: 60000, ttBits: 22, ...opts }
@@ -411,6 +443,14 @@ export const solve = (board, opts = {}) => {
   const info = { nodes: 0, stopAt: Date.now() + settings.maxThinkingTime }
   const timeOut = () => Date.now() >= info.stopAt
   const solver = new Solver(board, info, getTranspositionTable(settings.ttBits), timeOut)
+
+  // negamax setzt voraus, dass der Spieler am Zug nicht sofort gewinnen kann. Innerhalb der
+  // Suche halten das die Kinder aus generate() ein, an der Wurzel muss es geprueft werden -
+  // sonst wird der Gewinnzug gespielt und die entstandene Viererreihe nie bemerkt.
+  if (CENTER_ORDER.some((c) => board.canPlay(c) && board.isWinningMove(c))) {
+    const score = winScore(board.cntMoves)
+    return { score, min: score, max: score, solved: true, nodes: 0, elapsedTime: ((performance.now() - start) / 1000).toFixed(3) }
+  }
 
   let min = -((AREA - board.cntMoves) >> 1)
   let max = (AREA + 1 - board.cntMoves) >> 1
