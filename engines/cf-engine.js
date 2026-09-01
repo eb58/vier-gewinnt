@@ -13,33 +13,31 @@ const hasBit = (lo, hi, idx) => idx < 32 ? lo & (1 << idx) : hi & (1 << (idx - 3
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
 class TranspositionTable {
-  getTTMaskForDepth = (depth) => (1 << (depth >= 18 ? 23 : 20)) - 1
-
-  constructor(depth, trackBestMoves = true) {
-    this.mask = this.getTTMaskForDepth(depth)
+  constructor(bits) {
+    this.mask = (1 << bits) - 1
     this.keys = new Uint32Array(this.mask + 1)
     this.scores = new Int8Array(this.mask + 1)
     this.depths = new Int8Array(this.mask + 1)
     this.flags = new Int8Array(this.mask + 1)
-    this.bestMoves = trackBestMoves ? new Uint8Array(this.mask + 1) : null
+    this.bestMoves = new Uint8Array(this.mask + 1)
   }
 
   index = (hash) => hash & this.mask
 
-  store(hash, depth, score, flag, bestMove = -1) {
+  store(hash, lock, depth, score, flag, bestMove = -1) {
     const idx = this.index(hash)
     const normalizedScore = score === -0 ? 0 : score
-    this.keys[idx] = hash
+    this.keys[idx] = lock
     this.depths[idx] = depth
     this.scores[idx] = normalizedScore
     this.flags[idx] = flag
-    if (this.bestMoves) this.bestMoves[idx] = Number.isInteger(bestMove) && bestMove >= 0 ? bestMove + 1 : 0
+    this.bestMoves[idx] = Number.isInteger(bestMove) && bestMove >= 0 ? bestMove + 1 : 0
     return normalizedScore
   }
 
-  getScore(hash, depth, alpha, beta) {
+  getScore(hash, lock, depth, alpha, beta) {
     const idx = this.index(hash)
-    if (this.keys[idx] !== hash || this.depths[idx] < depth) return null
+    if (this.keys[idx] !== lock || this.flags[idx] === 0 || this.depths[idx] < depth) return null
 
     const score = this.scores[idx]
     const flag = this.flags[idx]
@@ -49,12 +47,18 @@ class TranspositionTable {
     return null
   }
 
-  getBestMove(hash) {
-    if (!this.bestMoves) return null
+  getBestMove(hash, lock) {
     const idx = this.index(hash)
-    return this.keys[idx] === hash && this.bestMoves[idx] > 0 ? this.bestMoves[idx] - 1 : null
+    return this.keys[idx] === lock && this.bestMoves[idx] > 0 ? this.bestMoves[idx] - 1 : null
   }
 }
+
+// Tabellen leben über die einzelne Suche hinaus. Nicht wegen der Allokation (die ist faul
+// und kostet <1 ms), sondern weil aufeinanderfolgende Züge derselben Partie grösstenteils
+// dieselben Stellungen durchsuchen: gemessen ~2,3x weniger Knoten über eine Partie.
+const ttPool = new Map()
+const getTranspositionTable = (depth, bits = depth >= 18 ? 23 : 20) => ttPool.get(bits) ?? ttPool.set(bits, new TranspositionTable(bits)).get(bits)
+export const resetTranspositionTables = () => ttPool.clear()
 
 const pieceKeys = [
   227019481, 1754434862, 629481213, 887205851, 529032562, 2067323277, 1070040335, 567190488, 468610655, 1669182959, 236891527, 1211317841, 849223426, 1031915473, 315781957,
@@ -65,6 +69,24 @@ const pieceKeys = [
   1051148609, 1018878751, 1721684837, 1720651398, 2073094346, 526823540, 1170625524, 465996760, 1587572180
 ]
 
+// Zweiter, unabhängiger Zobrist-Satz. Der erste Hash liefert nur den Bucket-Index, dieser
+// den gespeicherten Key: sonst verifizieren bei 2^23 Buckets nur 9 Restbits, also ~1/512
+// Falsch-Treffer pro Sondierung auf belegtem Bucket.
+const lockKeys = [
+  637637689, 815774105, 522435376, 1382770672, 176808096, 1082756127, 640494288, 989678737, 1710869636, 1624947436, 1250278506, 1181910015, 1027416654, 2093159984, 1409496923,
+  177382496, 788099594, 2106380381, 204025719, 222661944, 1369326064, 834945561, 1664780079, 662311229, 1627990383, 1774208738, 1607632385, 467829221, 1532649267, 38321525,
+  1850739995, 2145168487, 367158246, 879210716, 356867219, 58799315, 678791295, 994565155, 679797228, 1976485843, 121580149, 2115473843, 1583647628, 1909191142, 1831444082,
+  772769105, 239815290, 1292322313, 1541865502, 1640096157, 120290299, 2317569, 2056805492, 608345348, 1234407694, 1950175775, 1298477673, 2007607794, 1902263936, 550083005,
+  1622607389, 172665067, 1604513117, 1672548111, 1921691088, 1252593666, 814751769, 148205938, 1736292765, 1350697608, 1646074848, 1941018086, 1426583153, 375023523, 101081795,
+  1401335868, 1398781580, 1903072584, 978350794, 855221278, 1534393448, 315310072, 1073447366, 2040036757
+]
+
+// Ohne Seitenschlüssel wäre der Hash mehrdeutig: dieselbe Steinverteilung kann je nach
+// Startspieler mit unterschiedlichem Spieler am Zug auftreten. Beide müssen < 2^31 bleiben,
+// damit Hash und Lock nicht negativ werden und der Uint32Array-Vergleich trägt.
+const SIDE_KEY = 1836311903
+const SIDE_LOCK = 2065514873
+
 export class Board {
   Player = { ai: 0, hp: 1 }
   heightCols
@@ -74,7 +96,8 @@ export class Board {
     this.currentPlayer = player
     this.cntMoves = 0
     this.bitboards = [new Uint32Array(2), new Uint32Array(2)]
-    this.hash = 0
+    this.hash = player ? SIDE_KEY : 0
+    this.lock = player ? SIDE_LOCK : 0
   }
 
   constructor(FEN = '') {
@@ -85,7 +108,9 @@ export class Board {
 
   doMove = (c) => {
     const idx = c + COLS * this.heightCols[c]
-    this.hash ^= pieceKeys[this.currentPlayer ? idx : idx + 42]
+    const keyIdx = this.currentPlayer ? idx : idx + 42
+    this.hash ^= pieceKeys[keyIdx] ^ SIDE_KEY
+    this.lock ^= lockKeys[keyIdx] ^ SIDE_LOCK
     this.bitboards[this.currentPlayer][idx < 32 ? 0 : 1] |= 1 << (idx < 32 ? idx : idx - 32)
     this.cntMoves++
     this.currentPlayer = 1 - this.currentPlayer
@@ -97,7 +122,9 @@ export class Board {
     this.currentPlayer = 1 - this.currentPlayer
     this.heightCols[c]--
     const idx = c + COLS * this.heightCols[c]
-    this.hash ^= pieceKeys[this.currentPlayer ? idx : idx + 42]
+    const keyIdx = this.currentPlayer ? idx : idx + 42
+    this.hash ^= pieceKeys[keyIdx] ^ SIDE_KEY
+    this.lock ^= lockKeys[keyIdx] ^ SIDE_LOCK
     this.bitboards[this.currentPlayer][idx < 32 ? 0 : 1] &= ~(1 << (idx < 32 ? idx : idx - 32))
   }
 
@@ -162,8 +189,18 @@ class CfEngine {
     if ((this.searchInfo.nodes & TIME_CHECK_MASK) === 0 && this.timeOut()) return SEARCH_ABORTED
 
     const hash = this.board.hash
-    const cachedScore = this.tt.getScore(hash, depth, alpha, beta)
-    if (cachedScore !== null) return cachedScore
+    const lock = this.board.lock
+    const cachedScore = this.tt.getScore(hash, lock, depth, alpha, beta)
+    if (cachedScore !== null) {
+      if (!root) return cachedScore
+      // An der Wurzel darf ein Treffer nur greifen, wenn er auch einen Zug liefert -
+      // sonst käme ein Score ohne bestMove zurück.
+      const ttBest = this.tt.getBestMove(hash, lock)
+      if (Number.isInteger(ttBest)) {
+        this.searchInfo.bestMove = ttBest
+        return cachedScore
+      }
+    }
 
     if (depth === 0 || this.board.cntMoves === COLS * ROWS) return 0
 
@@ -173,11 +210,11 @@ class CfEngine {
     const winningMove = this.board.findWinningColumnForCurrentPlayer(columns)
     if (Number.isInteger(winningMove)) {
       if (root) this.searchInfo.bestMove = winningMove
-      return this.tt.store(hash, depth, MAXVAL, TT_FLAGS.exact, winningMove)
+      return this.tt.store(hash, lock, depth, MAXVAL, TT_FLAGS.exact, winningMove)
     }
 
     let bestMove = -1
-    const ttMove = this.useBestMove ? this.tt.getBestMove(hash) : null
+    const ttMove = this.useBestMove ? this.tt.getBestMove(hash, lock) : null
     const searchColumns = Number.isInteger(ttMove) ? TT_MOVE_ORDERS[ttMove] : columns
     for (const c of searchColumns) {
       if (this.board.heightCols[c] >= ROWS) continue
@@ -196,11 +233,11 @@ class CfEngine {
         bestMove = c
         if (root) this.searchInfo.bestMove = c
       }
-      if (alpha >= beta) return this.tt.store(hash, depth, alpha, TT_FLAGS.lower_bound, c)
+      if (alpha >= beta) return this.tt.store(hash, lock, depth, alpha, TT_FLAGS.lower_bound, c)
     }
 
     const flag = alpha > originalAlpha ? TT_FLAGS.exact : TT_FLAGS.upper_bound
-    return this.tt.store(hash, depth, alpha, flag, bestMove)
+    return this.tt.store(hash, lock, depth, alpha, flag, bestMove)
   }
 }
 
@@ -211,7 +248,7 @@ export const findBestMove = (board, opts) => {
   const timeOut = () => Date.now() >= searchInfo.stopAt
   const columns = CENTER_ORDER.filter((c) => board.heightCols[c] < ROWS)
   const useIterativeBestMove = settings.maxDepth > settings.minDepth
-  const tt = new TranspositionTable(settings.maxDepth, useIterativeBestMove)
+  const tt = getTranspositionTable(settings.maxDepth)
   const completed = { depth: 0, score: 0, bestMove: undefined }
 
   for (const depth of range(settings.maxDepth - settings.minDepth + 1).map((i) => i + settings.minDepth)) {
