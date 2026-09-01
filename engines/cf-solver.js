@@ -214,35 +214,38 @@ const lossScore = (stones) => -((AREA - stones) >> 1)
 
 const TT_FLAGS = { exact: 1, lower_bound: 2, upper_bound: 3 }
 
+// Ein Eintrag steckt in zwei aufeinanderfolgenden 32-Bit-Woertern, also acht Bytes in einer
+// Cache-Zeile. Vorher lag er ueber fuenf getrennte Arrays verteilt und eine Sondierung fasste
+// fuenf Speicherbereiche an - gemessen ist die Suche cache- und nicht platzgebunden.
+//   Wort 0: kLo (32 Bit)
+//   Wort 1: kHi (Bit 0-16) | Score+32 (17-22) | Flag (23-24) | bester Zug (25-27)
+const TT_SCORE_BIAS = 32
+
 class TranspositionTable {
   constructor(bits) {
     this.mask = (1 << bits) - 1
-    this.keysLo = new Uint32Array(this.mask + 1)
-    this.keysHi = new Uint32Array(this.mask + 1)
-    this.scores = new Int8Array(this.mask + 1)
-    this.flags = new Int8Array(this.mask + 1)
-    this.bestMoves = new Uint8Array(this.mask + 1)
+    this.words = new Uint32Array((this.mask + 1) * 2)
   }
 
-  // Index aus beiden Woertern gemischt, verifiziert wird aber gegen den vollen Schluessel -
-  // deshalb sind Falsch-Treffer hier ausgeschlossen, nicht nur unwahrscheinlich.
-  index = (kLo, kHi) => (Math.imul(kLo, 0x9e3779b1) ^ Math.imul(kHi, 0x85ebca77)) & this.mask
+  // Index aus beiden Woertern gemischt, verifiziert wird aber gegen den vollen 49-Bit-
+  // Schluessel - Falsch-Treffer sind damit ausgeschlossen, nicht nur unwahrscheinlich.
+  index = (kLo, kHi) => ((Math.imul(kLo, 0x9e3779b1) ^ Math.imul(kHi, 0x85ebca77)) & this.mask) << 1
 
   store(kLo, kHi, score, flag, bestMove) {
     const i = this.index(kLo, kHi)
-    this.keysLo[i] = kLo
-    this.keysHi[i] = kHi
-    this.scores[i] = score
-    this.flags[i] = flag
-    this.bestMoves[i] = bestMove + 1
+    this.words[i] = kLo
+    this.words[i + 1] = (kHi & HI_MASK) | (((score + TT_SCORE_BIAS) | (flag << 6) | (bestMove << 8)) << 17)
     return score
   }
 
   probe(kLo, kHi, alpha, beta) {
     const i = this.index(kLo, kHi)
-    if (this.keysLo[i] !== kLo >>> 0 || this.keysHi[i] !== kHi >>> 0 || this.flags[i] === 0) return null
-    const score = this.scores[i]
-    const flag = this.flags[i]
+    if (this.words[i] !== kLo >>> 0) return null
+    const w = this.words[i + 1]
+    if ((w & HI_MASK) !== (kHi >>> 0)) return null
+    const flag = (w >>> 23) & 3
+    if (flag === 0) return null
+    const score = ((w >>> 17) & 63) - TT_SCORE_BIAS
     if (flag === TT_FLAGS.exact) return score
     if (flag === TT_FLAGS.lower_bound && score >= beta) return score
     if (flag === TT_FLAGS.upper_bound && score <= alpha) return score
@@ -251,7 +254,9 @@ class TranspositionTable {
 
   getBestMove(kLo, kHi) {
     const i = this.index(kLo, kHi)
-    return this.keysLo[i] === (kLo >>> 0) && this.keysHi[i] === (kHi >>> 0) ? this.bestMoves[i] - 1 : -1
+    if (this.words[i] !== kLo >>> 0) return -1
+    const w = this.words[i + 1]
+    return (w & HI_MASK) === (kHi >>> 0) && (w >>> 23 & 3) !== 0 ? (w >>> 25) & 7 : -1
   }
 }
 
