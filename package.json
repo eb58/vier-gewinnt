@@ -9,10 +9,12 @@
     "test:watch": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
-    "test:all": "npm test && npm run test:ui"
+    "test:all": "npm test && npm run test:ui",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
+    "husky": "^9.1.7",
     "vitest": "^3.2.4"
   }
 }

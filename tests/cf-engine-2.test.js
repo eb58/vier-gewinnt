@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 import { Board as EngineBoard, findBestMove } from '../engines/cf-engine.js'
-import { Board, solve, resetTranspositionTables } from '../engines/cf-solver.js'
+import { Board, solve, findBestMove as solverFindBestMove, resetTranspositionTables } from '../engines/cf-solver.js'
 
 const readData = (fileName, limit) => fs.readFileSync(path.join(process.cwd(), 'data', fileName), 'utf-8')
   .split('\n')
@@ -69,4 +69,41 @@ describe('ENGINE: Vorzeichen', () => {
   engineSet('Test_L3_R1', 1000)
   engineSet('Test_L2_R1', 1000)
   engineSet('Test_L1_R1', 1000)
+})
+
+// Ein Solver kann nicht schlechter spielen, nur weniger wissen - und mit Buch weiss er in
+// der Eroeffnung alles. Die Schwierigkeitsstufen brauchen deshalb einen bewussten Fehler.
+describe('SOLVER: Schwierigkeit ueber blunderRate', () => {
+  const opts = { maxThinkingTime: 5000 }
+  // Eine Stellung mit echter Auswahl - bei nur einem nicht verlierenden Zug gibt es
+  // nichts zu verschlechtern, und der Test wuerde am falschen Objekt scheitern.
+  const mittelspiel = readData('Test_L2_R1', 40)
+    .map(({ input }) => input)
+    .find((fen) => {
+      resetTranspositionTables()
+      return solverFindBestMove(new Board(fen), opts).candidates > 1
+    })
+
+  test('ohne blunderRate wird der beste Zug gespielt', () => {
+    resetTranspositionTables()
+    const r = solverFindBestMove(new Board(mittelspiel), opts)
+    expect(r.blundered).toBe(false)
+    expect(r.bestMove).toBe(r.bestKnownMove)
+  })
+
+  test('mit blunderRate 1 wird ein anderer, aber nicht sofort verlierender Zug gespielt', () => {
+    resetTranspositionTables()
+    const r = solverFindBestMove(new Board(mittelspiel), { ...opts, blunderRate: 1, random: () => 0 })
+    expect(r.blundered).toBe(true)
+    expect(r.bestMove).not.toBe(r.bestKnownMove)
+    // Der Score gilt weiter fuer den besten Zug, die Bewertung bleibt also ehrlich.
+    expect(r.score).toBeDefined()
+  })
+
+  test('ein sofortiger Gewinn wird auch auf der schwaechsten Stufe genommen', () => {
+    resetTranspositionTables()
+    const r = solverFindBestMove(new Board('112233'), { ...opts, blunderRate: 1, random: () => 0 })
+    expect(r.bestMove).toBe(3) // Spalte 4
+    expect(r.blundered).toBeFalsy()
+  })
 })

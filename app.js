@@ -78,7 +78,8 @@ const activeDifficulty = () => {
   const active = $('.segment.active')
   return {
     label: active.dataset.label,
-    time: Number(active.dataset.time)
+    time: Number(active.dataset.time),
+    blunderRate: Number(active.dataset.blunder ?? 0)
   }
 }
 
@@ -229,8 +230,9 @@ const logSearchEnd = ({ kind, result, col, perspective }) => {
   const meaning = scoreMeaning(result.score, perspective)
   const moveText = Number.isInteger(col) ? col + 1 : '-'
   console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${moveText}, Score ${result.score ?? '-'}, ${result.solved ? 'aufgeloest' : 'offen'}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
+  if (result.blundered) console.log(`[Vier Gewinnt] ${kind}: absichtlicher Fehler der Stufe - gespielt Spalte ${moveText} statt ${result.bestKnownMove + 1}`)
   console.groupEnd?.()
-  console.log(`[Vier Gewinnt] ${kind}: ${meaning} | bester Zug: Spalte ${moveText}`)
+  console.log(`[Vier Gewinnt] ${kind}: ${meaning} | bester Zug: Spalte ${(result.bestKnownMove ?? col) + 1}`)
 }
 
 const logSearchAbort = (kind, reason) => {
@@ -451,7 +453,7 @@ const aiMove = async () => {
   const request = ++state.aiRequest
   const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
-  const opts = { maxThinkingTime: difficulty.time }
+  const opts = { maxThinkingTime: difficulty.time, blunderRate: difficulty.blunderRate }
   const kind = 'KI-Zug'
   const perspective = currentPlayerFromSnapshot(snapshot)
 

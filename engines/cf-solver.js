@@ -532,5 +532,23 @@ export const findBestMove = (board, opts = {}) => {
     }
   }
 
-  return { bestMove: best, score: bestScore === -Infinity ? undefined : bestScore, solved, nodes, elapsedTime: seconds() }
+  // Absichtlicher Fehler fuer die schwaecheren Stufen. Ein Solver kann nicht schlechter
+  // spielen, nur weniger wissen - und mit Buch weiss er in der Eroeffnung alles. Ohne
+  // bewusste Verschlechterung waeren die Stufen wirkungslos. Gewaehlt wird nur unter den
+  // nicht sofort verlierenden Zuegen: die KI verschenkt Stellung, aber kein Matt in eins.
+  const rnd = opts.random ?? Math.random
+  const alternatives = order.filter((c) => c !== best)
+  const blunder = (opts.blunderRate ?? 0) > 0 && alternatives.length > 0 && rnd() < opts.blunderRate
+  const played = blunder ? alternatives[Math.min(alternatives.length - 1, Math.floor(rnd() * alternatives.length))] : best
+
+  return {
+    bestMove: played,
+    bestKnownMove: best,
+    blundered: played !== best,
+    candidates: order.length, // Zuege, die nicht sofort verlieren - bei 1 gibt es nichts zu verschlechtern
+    score: bestScore === -Infinity ? undefined : bestScore,
+    solved,
+    nodes,
+    elapsedTime: seconds()
+  }
 }

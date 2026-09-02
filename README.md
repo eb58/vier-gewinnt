@@ -68,6 +68,10 @@ Zum visuellen Nachvollziehen kann Chrome sichtbar gestartet werden:
 npm run test:ui:headed
 ```
 
+`npm install` aktiviert außerdem den versionierten Pre-Commit-Hook. Vor jedem
+Commit führt er `npm run test:all` aus und bricht den Commit ab, falls ein Unit-
+oder UI-Test fehlschlägt.
+
 ## Stellung analysieren
 
 Eine Stellung lässt sich auch direkt in der Konsole untersuchen. Die Argumente
