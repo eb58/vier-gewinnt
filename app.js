@@ -1,4 +1,7 @@
-import { Board, COLS, ROWS, findBestMove } from './engines/cf-engine.js'
+// cf-engine.js liefert nur noch das Brettmodell fuer die Anzeige; gesucht wird mit dem Solver.
+import { Board, COLS, ROWS } from './engines/cf-engine.js'
+import { Board as SolverBoard, findBestMove as solverFindBestMove, setBook } from './engines/cf-solver.js'
+import { deserializeBook } from './engines/cf-book.js'
 import { createEngineWorkerClient } from './engine-worker-client.js'
 
 const $ = (selector) => document.querySelector(selector)
@@ -75,8 +78,7 @@ const activeDifficulty = () => {
   const active = $('.segment.active')
   return {
     label: active.dataset.label,
-    time: Number(active.dataset.time),
-    depth: Number(active.dataset.depth)
+    time: Number(active.dataset.time)
   }
 }
 
@@ -142,7 +144,6 @@ const boardFromSnapshot = ({ startPlayer, moves }) => {
 const boardSnapshot = () => ({ startPlayer: state.startPlayer, moves: [...state.moves] })
 const sameSnapshot = (snapshot) => state.startPlayer === snapshot.startPlayer && state.moves.length === snapshot.moves.length && state.moves.every((move, idx) => move === snapshot.moves[idx])
 const fallbackMove = (board) => moveOrder.find((col) => board.heightCols[col] < ROWS)
-const normalizeResult = (board, result) => ({ ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(board) })
 const lastAiMoveFromMoves = (startPlayer, moves) => moves.reduce((acc, col) => {
   const row = acc.heights[col]++
   const player = acc.player
@@ -154,20 +155,31 @@ const lastAiMoveFromMoves = (startPlayer, moves) => moves.reduce((acc, col) => {
   return acc
 }, { heights: Array(COLS).fill(0), player: startPlayer, cell: null, col: null })
 
-const runEngineOnMain = (opts, snapshot, onProgress = () => {}) => {
-  const board = boardFromSnapshot(snapshot)
-  return normalizeResult(board, findBestMove(board, { ...opts, onDepth: onProgress }))
+// Ersatzweg ohne Worker. Das Buch wird auch hier geladen, sonst braucht die Eroeffnung
+// Minuten statt Millisekunden.
+let bookOnMain = null
+const ensureBookOnMain = () => (bookOnMain ??= fetch(new URL('./data/book-8.bin', import.meta.url))
+  .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`))))
+  .then((buffer) => setBook(deserializeBook(new Uint8Array(buffer))))
+  .catch(() => {}))
+
+const runEngineOnMain = async (opts, snapshot, onProgress = () => {}) => {
+  await ensureBookOnMain()
+  const solverBoard = new SolverBoard()
+  snapshot.moves.forEach((col) => solverBoard.doMove(col))
+  const result = solverFindBestMove(solverBoard, { ...opts, onBound: onProgress })
+  return { ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(boardFromSnapshot(snapshot)) }
 }
 
 const searchEngine = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => engineWorker && !state.workerFailed
   ? { ...await engineWorker.search(opts, snapshot, onProgress), worker: true }
-  : { ...runEngineOnMain(opts, snapshot, onProgress), worker: false }
+  : { ...await runEngineOnMain(opts, snapshot, onProgress), worker: false }
 
 const searchWithFallback = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => {
   try {
     return await searchEngine(opts, snapshot, onProgress)
   } catch (error) {
-    if (state.workerFailed) return { ...runEngineOnMain(opts, snapshot, onProgress), worker: false }
+    if (state.workerFailed) return { ...await runEngineOnMain(opts, snapshot, onProgress), worker: false }
     throw error
   }
 }
@@ -187,16 +199,18 @@ const formatThinkingTime = (time) => time === undefined ? '-' : `${time}s`
 const moveList = (moves) => moves.map((col) => col + 1).join(' ') || '-'
 const playerName = (player) => player === AI ? 'KI' : 'Mensch'
 const currentPlayerFromSnapshot = (snapshot) => snapshot.moves.length % 2 ? 1 - snapshot.startPlayer : snapshot.startPlayer
-const scoreMeaning = (score, player, depth) => {
-  const depthText = Number.isInteger(depth) ? `bis Tiefe ${depth}` : 'innerhalb der Suchtiefe'
-  if (score > 0) return `Gewinnstellung fuer ${playerName(player)} ${depthText}`
-  if (score < 0) return `Verluststellung fuer ${playerName(player)} ${depthText}`
-  return ''
+// Solver-Score nach Pons: ein Sieg mit dem naechsten Stein bei `stones` Steinen ist
+// (43 - stones) / 2 wert, ein frueherer Sieg also mehr. Es ist ein bewiesener Wert bei
+// beiderseits bestem Spiel - undefined heisst, die Bedenkzeit hat nicht gereicht.
+const scoreMeaning = (score, player) => {
+  if (score === undefined) return 'in der Bedenkzeit nicht aufgeloest'
+  if (score === 0) return 'Remis bei beiderseits bestem Spiel'
+  return `${playerName(player)} ${score > 0 ? 'gewinnt' : 'verliert'} bei bestem Spiel (Score ${score})`
 }
 
 const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
   const board = boardFromSnapshot(snapshot)
-  console.groupCollapsed?.(`[Vier Gewinnt] ${kind}: ${difficulty.label}, Tiefe ${opts.maxDepth}, Zeit ${opts.maxThinkingTime}ms`)
+  console.groupCollapsed?.(`[Vier Gewinnt] ${kind}: ${difficulty.label}, Zeit ${opts.maxThinkingTime}ms`)
   console.log('Startspieler:', playerName(snapshot.startPlayer))
   console.log('Am Zug:', playerName(board.currentPlayer))
   console.log('Bewertungsperspektive:', `${playerName(board.currentPlayer)} (Spieler am Zug)`)
@@ -205,17 +219,18 @@ const logSearchStart = ({ kind, difficulty, opts, snapshot }) => {
   console.log(board.toString())
 }
 
-const logSearchDepth = (kind, info, perspective) => {
-  console.log(`[Vier Gewinnt] ${kind} Tiefe ${info.depth}: Zug ${Number.isInteger(info.bestMove) ? info.bestMove + 1 : '-'}, Score ${info.score}, Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime}s${info.timedOut ? ', Timeout' : ''}`)
+// Der Solver vertieft nicht ueber die Tiefe, sondern engt den Score binaer ein - gemeldet
+// wird deshalb die aktuelle Schranke statt einer Suchtiefe.
+const logSearchDepth = (kind, info) => {
+  console.log(`[Vier Gewinnt] ${kind} Schranke [${info.min}, ${info.max}], Knoten ${formatNodes(info.nodes)}, Zeit ${info.elapsedTime.toFixed(3)}s`)
 }
 
 const logSearchEnd = ({ kind, result, col, perspective }) => {
-  const meaning = scoreMeaning(result.score, perspective, result.depth)
+  const meaning = scoreMeaning(result.score, perspective)
   const moveText = Number.isInteger(col) ? col + 1 : '-'
-  console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${Number.isInteger(col) ? col + 1 : '-'}, Score ${result.score}, Tiefe ${result.depth}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
-  if (meaning) console.log('Bewertung:', meaning)
+  console.log(`[Vier Gewinnt] ${kind} Ergebnis: Spalte ${moveText}, Score ${result.score ?? '-'}, ${result.solved ? 'aufgeloest' : 'offen'}, Knoten ${formatNodes(result.nodes)}, Zeit ${result.elapsedTime}s, ${result.worker ? 'Worker' : 'Main Thread'}`)
   console.groupEnd?.()
-  if (meaning) console.log(`[Vier Gewinnt] ${kind}: ${meaning} | bester Zug: Spalte ${moveText} | Score ${result.score}`)
+  console.log(`[Vier Gewinnt] ${kind}: ${meaning} | bester Zug: Spalte ${moveText}`)
 }
 
 const logSearchAbort = (kind, reason) => {
@@ -377,9 +392,9 @@ const render = () => {
   els.hintMove.disabled = state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
   els.difficultySegments.forEach((segment) => { segment.disabled = state.locked || state.hintPending })
   els.difficultyLabel.textContent = activeDifficulty().label
-  els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : workerSupported && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
+  els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `${state.engineInfo.solved ? 'geloest' : 'offen'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : workerSupported && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
   els.lastAiMove.textContent = state.lastAiMove === null ? '-' : `Spalte ${state.lastAiMove + 1}`
-  els.depthStat.textContent = state.engineInfo?.depth ?? '-'
+  els.depthStat.textContent = state.engineInfo?.score ?? '-'
   els.thinkingTimeStat.textContent = formatThinkingTime(state.engineInfo?.elapsedTime)
   els.nodesStat.textContent = state.engineInfo ? formatNodes(state.engineInfo.nodes) : '-'
   setTurn()
@@ -436,7 +451,7 @@ const aiMove = async () => {
   const request = ++state.aiRequest
   const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
-  const opts = { maxThinkingTime: difficulty.time, minDepth: 1, maxDepth: difficulty.depth }
+  const opts = { maxThinkingTime: difficulty.time }
   const kind = 'KI-Zug'
   const perspective = currentPlayerFromSnapshot(snapshot)
 
@@ -446,7 +461,7 @@ const aiMove = async () => {
   render()
 
   try {
-    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info, perspective))
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
     if (request !== state.aiRequest || !sameSnapshot(snapshot) || state.gameOver) {
       logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
       return
@@ -485,7 +500,7 @@ const requestHint = async () => {
   const request = ++state.hintRequest
   const snapshot = boardSnapshot()
   const difficulty = activeDifficulty()
-  const opts = { maxThinkingTime: Math.min(2600, difficulty.time), minDepth: 1, maxDepth: Math.min(16, difficulty.depth) }
+  const opts = { maxThinkingTime: Math.min(2600, difficulty.time) }
   const kind = 'Tipp'
   const perspective = currentPlayerFromSnapshot(snapshot)
   state.hintPending = true
@@ -494,7 +509,7 @@ const requestHint = async () => {
   render()
 
   try {
-    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info, perspective))
+    const result = await searchWithFallback(opts, snapshot, (info) => logSearchDepth(kind, info))
     if (request !== state.hintRequest || !sameSnapshot(snapshot) || state.gameOver || state.board.currentPlayer !== HUMAN) {
       logSearchAbort(kind, 'Brett hat sich seit Suchstart geändert')
       return

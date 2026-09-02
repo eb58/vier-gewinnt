@@ -485,31 +485,52 @@ export const solve = (board, opts = {}) => {
   }
 }
 
+let moveGenerator = null
+
 export const findBestMove = (board, opts = {}) => {
   const start = performance.now()
+  const seconds = () => ((performance.now() - start) / 1000).toFixed(3)
+  const deadline = Date.now() + (opts.maxThinkingTime ?? 60000)
   const playable = CENTER_ORDER.filter((c) => board.canPlay(c))
-  const winner = playable.find((c) => board.isWinningMove(c))
-  if (winner !== undefined) return { bestMove: winner, score: winScore(board.cntMoves), solved: true, nodes: 0, elapsedTime: '0.000' }
 
-  let best = playable[0]
+  const winner = playable.find((c) => board.isWinningMove(c))
+  if (winner !== undefined) return { bestMove: winner, score: winScore(board.cntMoves), solved: true, nodes: 0, elapsedTime: seconds() }
+
+  // Zugliste in der Ordnung der Suche: nicht sofort verlierende Zuege zuerst, sortiert nach
+  // erzeugten Drohungen. Reicht die Zeit nicht fuer alle, ist der erste die beste Schaetzung.
+  moveGenerator ??= createMoveGenerator()
+  const { n, cols } = moveGenerator(board)
+  if (n < 0) return { bestMove: playable[0], score: lossScore(board.cntMoves), solved: true, nodes: 0, elapsedTime: seconds() }
+  const order = Array.from({ length: n }, (_, i) => cols[i])
+
+  let best = order[0]
   let bestScore = -Infinity
   let nodes = 0
   let solved = true
 
-  for (const c of playable) {
+  for (const c of order) {
+    // Restbudget statt vollem Budget je Zug, sonst dauert die Wurzel ein Vielfaches davon.
+    const left = deadline - Date.now()
+    if (left <= 0) {
+      solved = false
+      break
+    }
     board.moveBit(c)
     const bLo = outLo
     const bHi = outHi
     board.doMoveBit(bLo, bHi)
-    const r = solve(board, opts)
+    const r = solve(board, { ...opts, maxThinkingTime: left })
     board.undoMoveBit(bLo, bHi)
     nodes += r.nodes
-    if (!r.solved) { solved = false; continue }
+    if (!r.solved) {
+      solved = false
+      continue
+    }
     if (-r.score > bestScore) {
       bestScore = -r.score
       best = c
     }
   }
 
-  return { bestMove: best, score: solved ? bestScore : undefined, solved, nodes, elapsedTime: ((performance.now() - start) / 1000).toFixed(3) }
+  return { bestMove: best, score: bestScore === -Infinity ? undefined : bestScore, solved, nodes, elapsedTime: seconds() }
 }
