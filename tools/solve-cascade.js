@@ -11,7 +11,8 @@ const book = loadBook(bookFile)
 console.log(`Buch geladen: ply ${book.ply}, ${book.count.toLocaleString('de-DE')} Eintraege\n`)
 
 // Von sieben Steinen abwaerts bis zum leeren Brett. Die Spalten sind 1-basiert wie im FEN.
-const stellungen = ['4444444', '444444', '44444', '4444', '444', '44', '4', '']
+// Nicht siebenmal Spalte 4 - eine Spalte fasst nur sechs Steine.
+const stellungen = ['4444443', '444444', '44444', '4444', '444', '44', '4', '']
 
 for (const fen of stellungen) {
   resetTranspositionTables()

@@ -156,7 +156,11 @@ export class Board {
     this.cntMoves--
   }
 
+  // Bequemer Einstieg fuer FEN und Tests, nicht im Suchkern - die Pruefung kostet dort
+  // nichts. Ohne sie liefert eine volle Spalte das Zug-Bit 0, und doMoveBit vertauscht dann
+  // den Spieler am Zug, ohne einen Stein zu setzen: die Stellung waere still verfaelscht.
   doMove = (col) => {
+    if (!this.canPlay(col)) throw new Error(`Spalte ${col + 1} ist voll`)
     this.moveBit(col)
     this.doMoveBit(outLo, outHi)
   }
