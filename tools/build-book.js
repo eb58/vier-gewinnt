@@ -19,7 +19,7 @@ import { Board, canonicalKeyOf, createMoveGenerator, solve, resetTranspositionTa
 import { createBook, putBook, lookupBook, serializeBook, deserializeBook } from '../engines/cf-book.js'
 
 // Jeder Prozess zaehlt selbst auf (gut eine Sekunde) - so muss nichts uebertragen werden,
-// und Arbeiter i nimmt einfach jede n-te Stellung.
+// und Worker i nimmt einfach jede n-te Stellung.
 const enumerate = (ply) => {
   const nextMoves = createMoveGenerator()
   const board = new Board()
@@ -144,6 +144,6 @@ if (!isMainThread) {
         console.log(`  Zwischenstand gesichert (${book.count.toLocaleString('de-DE')} Eintraege)`)
       }
     })
-    worker.on('error', (e) => console.error(`Arbeiter ${id}:`, e.message))
+    worker.on('error', (e) => console.error(`Worker ${id}:`, e.message))
   }
 }
