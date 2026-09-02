@@ -3,6 +3,9 @@ dist/
 build/
 .cache/
 .tmp/
+playwright-report/
+test-results/
+blob-report/
 *.log
 .server.*
 Thumbs.db

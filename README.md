@@ -49,6 +49,25 @@ Für die Entwicklung können die Tests im Watch-Modus laufen:
 npm run test:watch
 ```
 
+Die Playwright-Regressionstests laufen headless in einer lokalen Chrome-Installation
+und prüfen die Oberfläche in Desktop- und Mobilgröße:
+
+```bash
+npm run test:ui
+```
+
+Alle Unit- und UI-Tests gemeinsam:
+
+```bash
+npm run test:all
+```
+
+Zum visuellen Nachvollziehen kann Chrome sichtbar gestartet werden:
+
+```bash
+npm run test:ui:headed
+```
+
 ## Stellung analysieren
 
 Eine Stellung lässt sich auch direkt in der Konsole untersuchen. Die Argumente
@@ -92,7 +111,8 @@ Die produktive Engine unter `engines/cf-engine.js` basiert auf dem Connect-Four-
 │   └── cf-engine.js # Vier-Gewinnt-Engine
 ├── favicon.svg     # App-Icon
 ├── run.js          # CLI zur Analyse einer Stellung
-├── tests/          # Engine-Tests
+├── playwright.config.js # Headless-UI-Testkonfiguration
+├── tests/          # Engine-, Worker- und UI-Tests
 ├── data/           # Teststellungen
 └── README.md
 ```

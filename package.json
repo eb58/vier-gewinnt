@@ -6,9 +6,13 @@
   "scripts": {
     "analyze": "node run.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
+    "test:all": "npm test && npm run test:ui"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "vitest": "^3.2.4"
   }
 }

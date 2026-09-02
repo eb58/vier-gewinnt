@@ -25,7 +25,8 @@ const state = {
   aiRequest: 0,
   hintRequest: 0,
   audioContext: null,
-  winPulse: null
+  winPulse: null,
+  confettiTimer: null
 }
 
 const els = {
@@ -54,7 +55,8 @@ const els = {
   resultToken: $('#resultToken'),
   resultTitle: $('#resultTitle'),
   resultText: $('#resultText'),
-  confetti: $('#confetti')
+  confetti: $('#confetti'),
+  difficultySegments: $$('.segment')
 }
 
 const hasPiece = (player, idx) => {
@@ -93,15 +95,19 @@ const storage = {
   }
 }
 
-const applySavedDifficulty = () => {
-  const saved = storage.get(DIFFICULTY_KEY)
-  const button = saved ? $(`.segment[data-label="${saved}"]`) : null
-  if (!button) return
-
-  $$('.segment').forEach((segment) => {
+const activateDifficulty = (button) => {
+  els.difficultySegments.forEach((segment) => {
     segment.classList.toggle('active', segment === button)
     segment.setAttribute('aria-checked', segment === button ? 'true' : 'false')
+    segment.tabIndex = segment === button ? 0 : -1
   })
+}
+
+const applySavedDifficulty = () => {
+  const saved = storage.get(DIFFICULTY_KEY)
+  const button = els.difficultySegments.find((segment) => segment.dataset.label === saved)
+    ?? els.difficultySegments.find((segment) => segment.classList.contains('active'))
+  if (button) activateDifficulty(button)
 }
 
 const setStatus = (title, meta = '', tone = '') => {
@@ -234,17 +240,24 @@ const winningCellsForMove = (col, player) => {
 }
 
 const showResult = (type, title, text) => {
-  els.result.hidden = false
   els.resultToken.className = `result-token ${type}`
   els.resultTitle.textContent = title
   els.resultText.textContent = text
+  els.result.hidden = false
 }
 
 const hideResult = () => {
   els.result.hidden = true
 }
 
+const clearConfetti = () => {
+  if (state.confettiTimer !== null) clearTimeout(state.confettiTimer)
+  state.confettiTimer = null
+  els.confetti.replaceChildren()
+}
+
 const launchConfetti = () => {
+  clearConfetti()
   const colors = ['#ef3f47', '#ffd84d', '#31c7a0', '#1266b0', '#c97934', '#fffaf2']
   els.confetti.replaceChildren(...range(56).map((i) => {
     const piece = document.createElement('span')
@@ -256,14 +269,18 @@ const launchConfetti = () => {
     piece.style.setProperty('--spin', `${180 + Math.random() * 540}deg`)
     return piece
   }))
-  setTimeout(() => els.confetti.replaceChildren(), 3300)
+  state.confettiTimer = setTimeout(clearConfetti, 3300)
 }
 
 const ensureAudioContext = () => {
   if (state.audioContext) return state.audioContext
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext
   if (!AudioContextCtor) return null
-  state.audioContext = new AudioContextCtor()
+  try {
+    state.audioContext = new AudioContextCtor()
+  } catch {
+    return null
+  }
   return state.audioContext
 }
 
@@ -343,7 +360,7 @@ const render = () => {
     const isWinFlash = Boolean(state.winPulse && isWin)
     const isLastAi = state.lastAiCell === `${row}-${col}`
     cell.className = ['cell', player, isLastAi ? 'last-ai-cell' : '', isWin ? 'win-cell' : '', isWinFlash ? 'win-flash' : ''].filter(Boolean).join(' ')
-    cell.setAttribute('aria-label', player ? `${player === 'human' ? 'Roter' : 'Gelber'} Stein` : 'Leeres Feld')
+    cell.setAttribute('aria-label', `Zeile ${row + 1}, Spalte ${col + 1}: ${player ? `${player === 'human' ? 'roter' : 'gelber'} Stein` : 'leer'}`)
   })
 
   $$('.drop-button').forEach((button) => {
@@ -356,8 +373,9 @@ const render = () => {
   els.moveCount.textContent = state.board.cntMoves
   els.humanScore.textContent = state.scores.human
   els.aiScore.textContent = state.scores.ai
-  els.undoMove.disabled = state.locked || state.gameOver || state.moves.length === 0
+  els.undoMove.disabled = state.locked || state.moves.length === 0
   els.hintMove.disabled = state.hintPending || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN
+  els.difficultySegments.forEach((segment) => { segment.disabled = state.locked || state.hintPending })
   els.difficultyLabel.textContent = activeDifficulty().label
   els.engineBadge.textContent = state.hintPending ? 'Tipp rechnet' : state.locked && state.board.currentPlayer === AI ? 'KI rechnet' : state.engineInfo ? `Tiefe ${state.engineInfo.depth ?? '-'} · ${state.engineInfo.elapsedTime ?? '0.000'}s` : workerSupported && !state.workerFailed ? 'Worker bereit' : 'Engine bereit'
   els.lastAiMove.textContent = state.lastAiMove === null ? '-' : `Spalte ${state.lastAiMove + 1}`
@@ -502,9 +520,18 @@ const requestHint = async () => {
 }
 
 const undoMove = () => {
-  if (state.locked || state.gameOver || state.moves.length === 0) return
+  if (state.locked || state.moves.length === 0) return
+  const wasGameOver = state.gameOver
+  const winner = wasGameOver && state.winningCells.length ? 1 - state.board.currentPlayer : null
   const undoCount = state.board.currentPlayer === HUMAN ? Math.min(2, state.moves.length) : 1
   range(undoCount).forEach(() => state.board.undoMove(state.moves.pop()))
+  if (winner !== null) state.scores[winner === HUMAN ? 'human' : 'ai']--
+  if (wasGameOver) {
+    state.gameOver = false
+    state.winPulse = null
+    hideResult()
+    clearConfetti()
+  }
   state.hintCol = null
   state.hintPending = false
   state.aiRequest++
@@ -521,6 +548,7 @@ const undoMove = () => {
 
 const newGame = () => {
   hideResult()
+  clearConfetti()
   state.board = new Board()
   state.startPlayer = els.aiStarts.checked ? AI : HUMAN
   state.board.init(state.startPlayer)
@@ -544,10 +572,8 @@ const newGame = () => {
 }
 
 const setDifficulty = (button) => {
-  $$('.segment').forEach((segment) => {
-    segment.classList.toggle('active', segment === button)
-    segment.setAttribute('aria-checked', segment === button ? 'true' : 'false')
-  })
+  if (button.disabled) return
+  activateDifficulty(button)
   storage.set(DIFFICULTY_KEY, button.dataset.label)
   setStatus('KI-Stärke geändert.', `${button.dataset.label} ist aktiv.`)
   render()
@@ -560,7 +586,9 @@ const buildBoard = () => {
       cell.className = 'cell'
       cell.dataset.row = row
       cell.dataset.col = col
-      cell.setAttribute('role', 'img')
+      cell.setAttribute('role', 'gridcell')
+      cell.setAttribute('aria-rowindex', row + 1)
+      cell.setAttribute('aria-colindex', col + 1)
       return cell
     })
   ))
@@ -587,7 +615,19 @@ const buildControls = () => {
 buildBoard()
 buildControls()
 applySavedDifficulty()
-$$('.segment').forEach((button) => button.addEventListener('click', () => setDifficulty(button)))
+els.difficultySegments.forEach((button, index) => {
+  button.addEventListener('click', () => setDifficulty(button))
+  button.addEventListener('keydown', (event) => {
+    const offsets = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }
+    const targetIndex = event.key === 'Home' ? 0 : event.key === 'End' ? els.difficultySegments.length - 1
+      : offsets[event.key] ? (index + offsets[event.key] + els.difficultySegments.length) % els.difficultySegments.length : null
+    if (targetIndex === null) return
+    event.preventDefault()
+    const target = els.difficultySegments[targetIndex]
+    target.focus()
+    setDifficulty(target)
+  })
+})
 els.board.addEventListener('click', (event) => humanMove(columnFromPoint(event)))
 els.board.addEventListener('mousemove', (event) => {
   const col = columnFromPoint(event)

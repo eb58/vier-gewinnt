@@ -55,6 +55,12 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #0b7fbe;
+  outline-offset: 3px;
+}
+
 .app {
   position: relative;
   width: min(1220px, calc(100% - 32px));
@@ -580,12 +586,13 @@ h2 {
 
 .primary-action:hover:not(:disabled),
 .secondary-action:hover:not(:disabled),
-.segment:hover {
+.segment:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 12px 20px rgb(20 24 28 / 14%);
 }
 
-.secondary-action:disabled {
+.secondary-action:disabled,
+.segment:disabled {
   cursor: not-allowed;
   opacity: 0.46;
 }
@@ -905,5 +912,23 @@ svg.button-icon {
 
   .player-plaque {
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary-action,
+  .secondary-action,
+  .segment,
+  .switch-row input,
+  .switch-row input::before,
+  .drop-button::before,
+  .cell.win-cell.win-flash,
+  .confetti-piece {
+    animation: none;
+    transition: none;
+  }
+
+  .confetti {
+    display: none;
   }
 }

@@ -54,9 +54,9 @@
 
         <div class="table">
           <div class="board-zone">
-            <div class="drop-track" id="columnPicker" aria-label="Spalte wählen"></div>
+            <div class="drop-track" id="columnPicker" role="group" aria-label="Spalte wählen"></div>
             <div class="board-frame">
-              <div class="board" id="board" aria-label="Spielfeld"></div>
+              <div class="board" id="board" role="grid" aria-label="Spielfeld" aria-rowcount="6" aria-colcount="7"></div>
             </div>
             <div class="board-stand" aria-hidden="true"></div>
           </div>
@@ -70,7 +70,7 @@
           </div>
         </div>
 
-        <div class="result" id="result" hidden>
+        <div class="result" id="result" role="status" aria-live="assertive" hidden>
           <div class="result-panel">
             <span class="result-token" id="resultToken"></span>
             <strong id="resultTitle">Runde beendet</strong>
@@ -109,10 +109,10 @@
             <strong id="difficultyLabel">Profi</strong>
           </div>
           <div class="segmented" id="difficultyPicker" role="radiogroup" aria-label="KI-Stärke">
-            <button class="segment" type="button" data-label="Locker" data-time="700" data-depth="8">Locker</button>
-            <button class="segment" type="button" data-label="Club" data-time="1600" data-depth="13">Club</button>
-            <button class="segment active" type="button" data-label="Profi" data-time="3200" data-depth="18">Profi</button>
-            <button class="segment" type="button" data-label="Meister" data-time="9000" data-depth="23">Meister</button>
+            <button class="segment" type="button" role="radio" aria-checked="false" tabindex="-1" data-label="Locker" data-time="700" data-depth="8">Locker</button>
+            <button class="segment" type="button" role="radio" aria-checked="false" tabindex="-1" data-label="Club" data-time="1600" data-depth="13">Club</button>
+            <button class="segment active" type="button" role="radio" aria-checked="true" tabindex="0" data-label="Profi" data-time="3200" data-depth="18">Profi</button>
+            <button class="segment" type="button" role="radio" aria-checked="false" tabindex="-1" data-label="Meister" data-time="9000" data-depth="23">Meister</button>
           </div>
         </section>
 
