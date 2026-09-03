@@ -116,12 +116,19 @@ export class Board {
     this.FEN.split('').forEach((c) => this.doMove(Number(c) - 1))
   }
 
-  init() {
+  // startPlayer braucht die Suche nicht - sie kennt nur "der am Zug ist". Fuer die Anzeige
+  // muss ein Stein aber einer Farbe zugeordnet werden, und dafuer zaehlt, wer begonnen hat.
+  init(startPlayer = 0) {
     this.curLo = 0 // Steine des Spielers am Zug
     this.curHi = 0
     this.maskLo = 0 // alle Steine
     this.maskHi = 0
     this.cntMoves = 0
+    this.startPlayer = startPlayer
+  }
+
+  get currentPlayer() {
+    return this.cntMoves % 2 ? 1 - this.startPlayer : this.startPlayer
   }
 
   heightOf = (col) => {
@@ -130,7 +137,18 @@ export class Board {
     return n
   }
 
+  // -1 fuer leer, sonst der Spieler, dem der Stein gehoert.
+  ownerAt = (col, row) => {
+    const b = col * H1 + row
+    const inMask = b < 32 ? this.maskLo & (1 << b) : this.maskHi & (1 << (b - 32))
+    if (inMask === 0) return -1
+    const inCur = b < 32 ? this.curLo & (1 << b) : this.curHi & (1 << (b - 32))
+    return inCur !== 0 ? this.currentPlayer : 1 - this.currentPlayer
+  }
+
   canPlay = (col) => (this.maskLo & TOP_LO[col]) === 0 && (this.maskHi & TOP_HI[col]) === 0
+  getHeightOfCol = (col) => this.heightOf(col)
+  opponentPlayer = () => 1 - this.currentPlayer
   isDraw = () => this.cntMoves >= AREA
 
   // Der Zug ist das unterste freie Feld der Spalte: mask + bottom, auf die Spalte maskiert.
@@ -164,6 +182,16 @@ export class Board {
     this.moveBit(col)
     this.doMoveBit(outLo, outHi)
   }
+
+  // Gegenstueck zu doMove. Der oberste Stein der Spalte ergibt sich aus ihrer Hoehe.
+  undoMove = (col) => {
+    const row = this.heightOf(col) - 1
+    if (row < 0) throw new Error(`Spalte ${col + 1} ist leer`)
+    const b = col * H1 + row
+    this.undoMoveBit(b < 32 ? 1 << b : 0, b < 32 ? 0 : 1 << (b - 32))
+  }
+
+  checkWinForColumn = (col) => this.isWinningMove(col)
 
   // Gewinnt der Spieler am Zug, wenn er in dieser Spalte setzt?
   isWinningMove = (col) => {
@@ -203,15 +231,8 @@ export class Board {
   }
 
   toString = () => {
-    const at = (col, row) => {
-      const b = col * H1 + row
-      const inMask = b < 32 ? this.maskLo & (1 << b) : this.maskHi & (1 << (b - 32))
-      if (!inMask) return ' _ '
-      const inCur = b < 32 ? this.curLo & (1 << b) : this.curHi & (1 << (b - 32))
-      // curLo gehoert dem Spieler am Zug; bei gerader Zugzahl ist das Spieler 0
-      return (inCur !== 0) === (this.cntMoves % 2 === 0) ? ' X ' : ' O '
-    }
-    return range(ROWS).reduce((acc, r) => acc + range(COLS).reduce((line, c) => line + at(c, ROWS - 1 - r), '') + '\n', '')
+    const symbol = (owner) => (owner < 0 ? ' _ ' : owner === 0 ? ' X ' : ' O ')
+    return range(ROWS).reduce((acc, r) => acc + range(COLS).reduce((line, c) => line + symbol(this.ownerAt(c, ROWS - 1 - r)), '') + '\n', '')
   }
 }
 
