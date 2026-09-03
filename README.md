@@ -100,7 +100,7 @@ Die Zugfolge verwendet die Spaltennummern `1` bis `7`.
 | Profi | 18 |
 | Meister | 23 |
 
-Die produktive Engine unter `engines/cf-engine.js` basiert auf dem Connect-Four-Projekt von `eb58` und wurde für die UI-Anbindung angepasst.
+Die produktive Engine unter `engines/cf-solver.js` ist ein vollständiger Solver nach dem Vorbild von Pascal Pons: 49-Bit-Bitboard, exakter Score `(43 − Steine) / 2`, Zugordnung nach erzeugten Drohungen, Spiegelsymmetrie und Null-Fenster-Suche über den Score. Mit dem Eröffnungsbuch in `data/book-8.bin` (77.179 Stellungen mit acht Steinen) ist Vier Gewinnt vollständig gelöst: das leere Brett ergibt Score 1, der Anziehende gewinnt mit dem 41. Stein.
 
 ## Projektstruktur
 
@@ -112,7 +112,8 @@ Die produktive Engine unter `engines/cf-engine.js` basiert auf dem Connect-Four-
 ├── engine-worker-client.js # Abbruch und Lebenszyklus der Worker-Suchen
 ├── engine-worker.js # Web Worker für KI-Suche
 ├── engines/
-│   └── cf-engine.js # Vier-Gewinnt-Engine
+│   ├── cf-solver.js # Solver mit Bitboard, Symmetrie und Buchanbindung
+│   └── cf-book.js   # Eröffnungsbuch: Ablage, Nachschlagen, Serialisierung
 ├── favicon.svg     # App-Icon
 ├── run.js          # CLI zur Analyse einer Stellung
 ├── playwright.config.js # Headless-UI-Testkonfiguration

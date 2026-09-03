@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import fs from 'fs'
 import path from 'path'
-import { Board as EngineBoard, findBestMove } from '../engines/cf-engine.js'
 import { Board, solve, findBestMove as solverFindBestMove, resetTranspositionTables } from '../engines/cf-solver.js'
 
 const readData = (fileName, limit) => fs.readFileSync(path.join(process.cwd(), 'data', fileName), 'utf-8')
@@ -54,25 +53,6 @@ describe('SOLVER: exakte Scores', () => {
   solverSet('Test_L1_R1', 300) // Eroeffnung, deutlich teurer
 })
 
-// Die alte Engine kennt nur gewonnen/offen/verloren und bleibt vorerst die Engine der App.
-// Fuer sie ist das Vorzeichen alles, was sich pruefen laesst.
-const engineSet = (fileName, limit) => {
-  const rows = readData(fileName, limit)
-  test(`${fileName}: ${rows.length} Stellungen, Vorzeichen`, () => {
-    const wrong = rows.filter(({ input, expected }) =>
-      Math.sign(findBestMove(new EngineBoard(input), { maxThinkingTime: 5000 }).score) !== Math.sign(expected))
-    expect(wrong.map(({ input }) => input)).toEqual([])
-  })
-}
-
-describe('ENGINE: Vorzeichen', () => {
-  engineSet('Test_L3_R1', 1000)
-  engineSet('Test_L2_R1', 1000)
-  engineSet('Test_L1_R1', 1000)
-})
-
-// Ein Solver kann nicht schlechter spielen, nur weniger wissen - und mit Buch weiss er in
-// der Eroeffnung alles. Die Schwierigkeitsstufen brauchen deshalb einen bewussten Fehler.
 describe('SOLVER: Schwierigkeit ueber blunderRate', () => {
   const opts = { maxThinkingTime: 5000 }
   // Eine Stellung mit echter Auswahl - bei nur einem nicht verlierenden Zug gibt es

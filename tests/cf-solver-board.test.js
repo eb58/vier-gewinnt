@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { Board, COLS, ROWS, solve, setBook, resetTranspositionTables } from '../engines/cf-solver.js'
+import { Board, COLS, ROWS, solve, findBestMove as solverFindBestMove, setBook, resetTranspositionTables } from '../engines/cf-solver.js'
 
 const range = (n) => [...Array(n).keys()]
 const snapshot = (board) => ({
@@ -93,4 +93,41 @@ describe('SOLVER gegen Brute Force', () => {
 
     expect(geprueft).toBeGreaterThan(15)
   }, 120000)
+})
+
+// Portiert aus cf-engine-1.test.js, weil es diese Faelle sonst nirgends mehr gaebe.
+describe('SOLVER: Abbruch und Tabelle', () => {
+  test('bricht bei abgelaufener Zeit ab, ohne das Brett zu veraendern', () => {
+    setBook(null)
+    resetTranspositionTables()
+    const board = new Board('4444') // ohne Buch nicht in Millisekunden loesbar
+    const before = snapshot(board)
+    const r = solve(board, { maxThinkingTime: 5 })
+
+    expect(r.solved).toBe(false)
+    expect(r.score).toBeUndefined()
+    expect(r.min).toBeLessThanOrEqual(r.max)
+    expect(snapshot(board)).toEqual(before)
+  })
+
+  test('liefert mit warmer Tabelle dasselbe Ergebnis, aber billiger', () => {
+    setBook(null)
+    resetTranspositionTables()
+    const opts = { maxThinkingTime: 30000 }
+    const kalt = solve(new Board('444444'), opts)
+    const warm = solve(new Board('444444'), opts)
+
+    expect(warm.score).toBe(kalt.score)
+    expect(warm.nodes).toBeLessThan(kalt.nodes)
+  }, 60000)
+
+  test('erzwingt den Block gegen eine einzelne Drohung', () => {
+    setBook(null)
+    resetTranspositionTables()
+    // Spieler 1 droht mit Spalte 3; jeder andere Zug verliert sofort.
+    const board = new Board('3731713')
+    expect(board.isWinningMove(2)).toBe(false) // nicht der eigene Gewinn
+    const opts = { maxThinkingTime: 10000 }
+    expect(solverFindBestMove(board, opts).bestMove).toBe(2)
+  })
 })

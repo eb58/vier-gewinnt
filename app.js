@@ -1,6 +1,4 @@
-// cf-engine.js liefert nur noch das Brettmodell fuer die Anzeige; gesucht wird mit dem Solver.
-import { Board, COLS, ROWS } from './engines/cf-engine.js'
-import { Board as SolverBoard, findBestMove as solverFindBestMove, setBook } from './engines/cf-solver.js'
+import { Board, COLS, ROWS, findBestMove as solverFindBestMove, setBook } from './engines/cf-solver.js'
 import { deserializeBook } from './engines/cf-book.js'
 import { createEngineWorkerClient } from './engine-worker-client.js'
 
@@ -62,16 +60,11 @@ const els = {
   difficultySegments: $$('.segment')
 }
 
-const hasPiece = (player, idx) => {
-  const bitboard = state.board.bitboards[player]
-  return Boolean(idx < 32 ? bitboard[0] & (1 << idx) : bitboard[1] & (1 << (idx - 32)))
-}
+const ownerOf = (row, col) => state.board.ownerAt(col, ROWS - row - 1)
 
 const cellPlayer = (row, col) => {
-  const idx = (ROWS - row - 1) * COLS + col
-  if (hasPiece(HUMAN, idx)) return 'human'
-  if (hasPiece(AI, idx)) return 'ai'
-  return ''
+  const owner = ownerOf(row, col)
+  return owner === HUMAN ? 'human' : owner === AI ? 'ai' : ''
 }
 
 const activeDifficulty = () => {
@@ -144,7 +137,7 @@ const boardFromSnapshot = ({ startPlayer, moves }) => {
 
 const boardSnapshot = () => ({ startPlayer: state.startPlayer, moves: [...state.moves] })
 const sameSnapshot = (snapshot) => state.startPlayer === snapshot.startPlayer && state.moves.length === snapshot.moves.length && state.moves.every((move, idx) => move === snapshot.moves[idx])
-const fallbackMove = (board) => moveOrder.find((col) => board.heightCols[col] < ROWS)
+const fallbackMove = (board) => moveOrder.find((col) => board.canPlay(col))
 const lastAiMoveFromMoves = (startPlayer, moves) => moves.reduce((acc, col) => {
   const row = acc.heights[col]++
   const player = acc.player
@@ -166,10 +159,9 @@ const ensureBookOnMain = () => (bookOnMain ??= fetch(new URL('./data/book-8.bin'
 
 const runEngineOnMain = async (opts, snapshot, onProgress = () => {}) => {
   await ensureBookOnMain()
-  const solverBoard = new SolverBoard()
-  snapshot.moves.forEach((col) => solverBoard.doMove(col))
-  const result = solverFindBestMove(solverBoard, { ...opts, onBound: onProgress })
-  return { ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(boardFromSnapshot(snapshot)) }
+  const board = boardFromSnapshot(snapshot)
+  const result = solverFindBestMove(board, { ...opts, onBound: onProgress })
+  return { ...result, bestMove: Number.isInteger(result.bestMove) ? result.bestMove : fallbackMove(board) }
 }
 
 const searchEngine = async (opts, snapshot = boardSnapshot(), onProgress = () => {}) => engineWorker && !state.workerFailed
@@ -241,14 +233,14 @@ const logSearchAbort = (kind, reason) => {
 }
 
 const winningCellsForMove = (col, player) => {
-  const row = state.board.heightCols[col] - 1
+  const row = state.board.getHeightOfCol(col) - 1
   const lines = [
     [[0, 1], [0, -1]],
     [[1, 0], [-1, 0]],
     [[1, 1], [-1, -1]],
     [[1, -1], [-1, 1]]
   ]
-  const has = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS && hasPiece(player, r * COLS + c)
+  const has = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS && state.board.ownerAt(c, r) === player
   const collect = ([dr, dc], r = row + dr, c = col + dc, cells = []) => has(r, c) ? collect([dr, dc], r + dr, c + dc, [...cells, [r, c]]) : cells
   const found = lines
     .map(([a, b]) => [[row, col], ...collect(a), ...collect(b)])
@@ -382,7 +374,7 @@ const render = () => {
 
   $$('.drop-button').forEach((button) => {
     const col = Number(button.dataset.col)
-    const isFull = state.board.heightCols[col] >= ROWS
+    const isFull = !state.board.canPlay(col)
     button.disabled = state.locked || state.gameOver || state.board.currentPlayer !== HUMAN || isFull
     button.className = ['drop-button', state.hintCol === col ? 'hint' : '', isPlayable && state.hoverCol === col ? 'preview' : ''].filter(Boolean).join(' ')
   })
@@ -430,7 +422,7 @@ const finishIfNeeded = (col, player, didWin) => {
 
 const playMove = (col) => {
   const player = state.board.currentPlayer
-  const row = state.board.heightCols[col]
+  const row = state.board.getHeightOfCol(col)
   const didWin = state.board.checkWinForColumn(col)
   state.board.doMove(col)
   state.moves.push(col)
@@ -490,7 +482,7 @@ const aiMove = async () => {
 }
 
 const humanMove = (col) => {
-  if (!validColumn(col) || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN || state.board.heightCols[col] >= ROWS) return
+  if (!validColumn(col) || state.locked || state.gameOver || state.board.currentPlayer !== HUMAN || !state.board.canPlay(col)) return
   if (!playMove(col)) {
     setStatus('Die KI ist am Zug.', 'Kurz rechnen lassen.')
     aiMove()
